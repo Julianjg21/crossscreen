@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permisos de la ventana principal: solo eventos (para recibir los del agente). Los comandos propios de la app están permitidos por defecto.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

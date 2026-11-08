@@ -1,0 +1,42 @@
+[package]
+name = "crossscreen-viewer"
+description = "Visor nativo de CrossScreen: recibe por QUIC, decodifica H.264 por hardware y lo presenta en una ventana (receptor del MVP F2)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "crossscreen-viewer"
+path = "src/main.rs"
+
+[dependencies]
+cs-core.workspace = true
+cs-protocol.workspace = true
+cs-security.workspace = true
+cs-transport.workspace = true
+cs-decode = { path = "../../crates/cs-decode" }
+cs-render = { path = "../../crates/cs-render" }
+anyhow.workspace = true
+bytes.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+directories = "5"
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+png = "0.17"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Performance",
+] }
+
+[lints]
+workspace = true

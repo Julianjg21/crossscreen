@@ -1,0 +1,33 @@
+[package]
+name = "crossscreen-cli"
+description = "CLI de diagnóstico de CrossScreen: identidad, emparejamiento, descubrimiento y banco de pruebas de transporte"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "crossscreen"
+path = "src/main.rs"
+
+[dependencies]
+cs-core.workspace = true
+cs-protocol.workspace = true
+cs-security.workspace = true
+cs-transport.workspace = true
+cs-discovery.workspace = true
+cs-display.workspace = true
+cs-pipeline = { path = "../../crates/cs-pipeline" }
+anyhow.workspace = true
+clap.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+bytes.workspace = true
+quinn.workspace = true
+directories = "5"
+
+[lints]
+workspace = true

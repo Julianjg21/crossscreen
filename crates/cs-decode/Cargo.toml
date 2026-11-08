@@ -1,0 +1,30 @@
+[package]
+name = "cs-decode"
+description = "Decodificación de vídeo H.264 por hardware para el visor de CrossScreen (Media Foundation + D3D11 en Windows)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_Media_MediaFoundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+[dev-dependencies]
+anyhow.workspace = true
+
+[lints]
+workspace = true

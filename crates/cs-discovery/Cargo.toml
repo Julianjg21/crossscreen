@@ -1,0 +1,20 @@
+[package]
+name = "cs-discovery"
+description = "Descubrimiento de dispositivos CrossScreen por mDNS/DNS-SD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cs-core.workspace = true
+mdns-sd.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

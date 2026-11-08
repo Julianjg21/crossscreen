@@ -1,0 +1,93 @@
+# CrossScreen
+
+Plataforma open source para usar un segundo computador como **monitor adicional real** de otro a través de Ethernet o Wi-Fi, con soporte bidireccional Windows ⇄ Linux.
+
+> Estado: **F0 (fundamentos) en curso.** Ya existe el núcleo multiplataforma (protocolo, seguridad, transporte, descubrimiento y sesión) con tests y una CLI de diagnóstico.
+>
+> En Windows ya funciona la cadena completa de punta a punta, pero **solo se ha probado con emisor y receptor en el mismo equipo**. Falta probarla entre dos PCs y conectarla con el agente y el panel. Linux aún no está soportado.
+
+## Qué funciona hoy
+
+| Componente | Estado | Verificación |
+|---|---|---|
+| `cs-core`: tipos de dominio, validación de modos y negociación de códecs | ✅ | Tests unitarios y `proptest` |
+| `cs-protocol`: mensajes de control (postcard) y cabecera de vídeo de 24 B | ✅ | *Round-trip*, partición arbitraria del flujo y basura aleatoria sin pánico |
+| `cs-security`: identidad Ed25519, emparejamiento SPAKE2, verificadores TLS con huella fijada, almacén de confianza, limitador de intentos | ✅ | Tests de PIN incorrecto y de MITM con PIN correcto |
+| `cs-transport`: QUIC (quinn) con TLS 1.3 mutuo, *packetizer* y reensamblador con FEC Reed-Solomon, emparejamiento sobre QUIC | ✅ | Tests de integración en loopback real; rechazo de un par no fijado |
+| `cs-discovery`: anuncio y exploración mDNS `_crossscreen._udp` | ✅ compila; ⚠️ falta probarlo entre equipos (PoC-10) | Tests de TXT |
+| `cs-session`: máquina de estados con reconexión y gracia del monitor | ✅ | Tests de transiciones |
+| CLI `crossscreen`: `id`, `pair-listen`, `pair`, `peers`, `forget`, `discover`, `bench-serve`, `bench` | ✅ | Probada de punta a punta en un equipo |
+| Clave privada protegida por el SO | ✅ Windows (DPAPI, con migración) / ❌ Linux (archivo 0600; Secret Service pendiente) | Tests de ida y vuelta, migración y blob manipulado |
+| *Pacing* de datagramas (*token bucket* con temporizador de alta resolución) | ✅ medido en loopback; ⚠️ falta Wi-Fi real | [PoC-4](docs/poc-results/poc-04-transporte.md) |
+| `cs-capture` (Windows): DXGI Desktop Duplication del monitor virtual en GPU, cursor fuera de banda, recuperación ante cambio de modo | ✅ | [PoC-2](docs/poc-results/poc-02-captura.md): 0,64 ms p95 de CPU por frame |
+| `cs-encode` (Windows): H.264 por hardware (Media Foundation, Intel QSV) con entrada D3D11 y BGRA→NV12 en GPU | ✅ funciona; ⚠️ **no cumple el objetivo de latencia en este portátil** (1080p60 p95 ≈ 11 ms frente a ≤ 6 ms) | [PoC-3](docs/poc-results/poc-03-codificacion.md) |
+| `cs-decode` + `cs-render` + `crossscreen-viewer` (Windows): decodificación por hardware y presentación D3D11 sin copias | ✅ | [PoC-5](docs/poc-results/poc-05-decodificacion-render.md): decodificación + presentación ≈ 3,6 ms p95 en ventana |
+| `cs-ipc` + `crossscreen-agent` + panel Tauri (`apps/desktop`) | ✅ Windows; ⚠️ IPC de Linux compila pero no se ha ejecutado | Comunicación real agente ↔ panel; canal restringido al usuario actual |
+| `crossscreen-helper` (Windows, admin bajo demanda): instala y desinstala Virtual-Display-Driver verificando el hash de cada archivo, y reinicia el dispositivo | ✅ | Instalado y recuperado un código 43 en este equipo ([PoC-1](docs/poc-results/poc-01-vdd.md)) |
+| `cs-display` (Windows): mostrar y retirar el monitor virtual con CCD de rutas explícitas y fijar el modo, sin privilegios | ✅ | 100/100 ciclos sin fallos; `crossscreen display show\|hide\|list\|cycle` |
+| Linux: monitor virtual | ❌ no iniciado | PoC-7 |
+| **Cadena completa (MVP F2, Windows):** `crossscreen stream` (emisor: monitor virtual → captura → codificación → QUIC) y `crossscreen-viewer --listen` (receptor: QUIC → decodificación → presentación con cursor real) | ✅ funciona en un mismo equipo; ⚠️ **falta probar entre dos equipos** y en Wi-Fi | Captura → `Present()` en el mismo equipo: p50 29 ms / p95 32 ms; 0 frames perdidos ([emisor](docs/poc-results/mvp-f2-emisor.md), [receptor](docs/poc-results/mvp-f2-receptor.md)) |
+| Integración del streaming en el agente y el panel | ❌ pendiente | Hoy se lanza desde la CLI |
+
+## Descargar y probar (alfa, Windows x64)
+
+Descarga `crossscreen-<versión>-windows-x64.zip` desde **Releases** y sigue [docs/10-prueba-dos-equipos.md](docs/10-prueba-dos-equipos.md). Los binarios no están firmados todavía y no necesitan el *Visual C++ Redistributable*.
+
+Para publicar una versión nueva: `git tag v0.0.1-alpha.N && git push origin v0.0.1-alpha.N`. GitHub Actions compila en un Windows limpio y adjunta el `.zip` a la release (`.github/workflows/release.yml`). Para empaquetar en local: `.\scripts\package-windows.ps1`.
+
+## Desarrollo
+
+Requisitos: Rust estable. En Windows también hacen falta las MSVC Build Tools (carga de trabajo "Desarrollo de escritorio con C++").
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo run -p crossscreen-cli -- id
+```
+
+Emparejar dos equipos y medir el transporte:
+
+```sh
+# Equipo B (muestra un PIN)
+crossscreen pair-listen
+# Equipo A
+crossscreen pair <ip-de-B>:<puerto> <PIN>
+# Banco de pruebas del transporte (PoC-4)
+crossscreen bench-serve                         # en B
+crossscreen bench <ip-de-B>:47800 --peer <huella-de-B> --mbps 20   # en A
+```
+
+## Terminología
+
+| Término | Significado |
+|---|---|
+| **Fuente** (*source*) | Equipo cuyo escritorio se extiende o duplica. Crea el monitor virtual, captura, codifica y transmite. |
+| **Receptor** (*sink*) | Equipo que actúa como pantalla. Recibe, decodifica y presenta a pantalla completa. Opcionalmente devuelve entrada (teclado, ratón, táctil). |
+| **Monitor virtual** | Pantalla que el sistema operativo de la fuente reconoce como un monitor físico (aparece en *Configuración de pantalla*, admite resolución y frecuencia, se puede extender). |
+| **Sesión** | Conexión autenticada entre una fuente y un receptor, que puede contener uno o varios flujos de pantalla. |
+
+Un mismo binario puede actuar como fuente, receptor o ambos. "Bidireccional" significa que cualquier equipo puede asumir cualquier rol, no que haya un solo flujo en ambos sentidos.
+
+## Documentación
+
+| # | Documento | Contenido |
+|---|---|---|
+| 1 | [Análisis de repositorios de referencia](docs/01-analisis-repositorios.md) | TwinDesk, Deskreen, Weylus, Sunshine, ScreenExtend: auditoría de código, licencias, lo anunciado frente a lo implementado |
+| 2 | [Arquitectura técnica](docs/02-arquitectura.md) | Capas, procesos, flujo de datos, presupuesto de latencia, diagrama de componentes |
+| 3 | [Monitores virtuales](docs/03-monitores-virtuales.md) | Estrategia para Windows (IddCx) y Linux (Mutter, KWin, wlroots, EVDI, X11) |
+| 4 | [Protocolos de streaming](docs/04-protocolos-streaming.md) | WebRTC, RTP/UDP propio, QUIC, SRT, WebSocket, MoQ, RDP; decisión de transporte y protocolo de cable |
+| 5 | [Estructura del monorepo](docs/05-estructura-monorepo.md) | Crates, aplicaciones, drivers, herramientas, CI |
+| 6 | [Riesgos y limitaciones](docs/06-riesgos.md) | Matriz de riesgos con mitigación |
+| 7 | [Roadmap](docs/07-roadmap.md) | Fases con criterios de salida |
+| 8 | [Pruebas de concepto](docs/08-pruebas-de-concepto.md) | PoC necesarias para validar la viabilidad, con criterios de éxito medibles |
+| 9 | [Contrato de sesión del MVP](docs/09-contrato-sesion-mvp.md) | Protocolo entre emisor y receptor: control, vídeo y cursor |
+| 10 | [Prueba entre dos equipos](docs/10-prueba-dos-equipos.md) | Paso a paso para probar Windows → Windows por cable y Wi-Fi |
+| — | [Resultados de las PoC](docs/poc-results/) | Mediciones reales de cada prueba |
+| — | [Decisiones arquitectónicas (ADR)](docs/adr/README.md) | Registro de decisiones |
+
+## Principios no negociables
+
+1. **No simular.** Ninguna funcionalidad se presenta en la interfaz hasta que funciona. No se muestran estadísticas inventadas ni monitores "virtuales" que en realidad son ventanas.
+2. **Licencia limpia.** El proyecto se publica bajo `MIT OR Apache-2.0`. Las cinco referencias analizadas son GPL-3.0 o AGPL-3.0, así que **no se copia, traduce ni parafrasea código de ninguna de ellas** (ver [ADR-0001](docs/adr/0001-licencia.md)).
+3. **Seguro por defecto.** Todo el tráfico va cifrado y autenticado, también en la LAN; no hay modo "sin cifrar".
+4. **Núcleo independiente del SO.** La lógica de sesión, el protocolo y el transporte no dependen de ningún sistema operativo. Lo específico de cada plataforma vive detrás de *traits*.

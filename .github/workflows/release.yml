@@ -1,0 +1,39 @@
+name: Release
+
+# Se publica al subir una etiqueta, p. ej.:  git tag v0.0.1-alpha.1 && git push origin v0.0.1-alpha.1
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests (crates portables y de Windows sin pantalla)
+        run: cargo test --workspace --exclude crossscreen-desktop
+      - name: Compilar y empaquetar
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - name: Artefacto del workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: crossscreen-windows-x64
+          path: dist/*.zip
+      - name: Publicar release (solo con etiqueta)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          prerelease: true
+          generate_release_notes: true
+          body: |
+            Versión de prueba (alfa). Sin firma de código: Windows SmartScreen puede avisar.
+            Instrucciones para probar entre dos equipos: `PRUEBA-DOS-EQUIPOS.md` dentro del zip.

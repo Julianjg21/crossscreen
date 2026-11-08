@@ -1,0 +1,32 @@
+# Driver de monitor virtual de terceros fijado por versión y hash.
+# Ver docs/adr/0006-monitor-virtual-windows.md.
+#
+# Verificado el 2026-11-08:
+#   - SHA-256 del zip = digest publicado por GitHub para el asset.
+#   - Firma Authenticode de mttvdd.cat y MttVDD.dll: Valid,
+#     CN=SignPath Foundation (certificado válido hasta 2027-09-07).
+#   - Licencia upstream: MIT.
+
+name = "VirtualDrivers/Virtual-Display-Driver"
+version = "25.7.23"
+driver_ver = "11.30.4.434"          # DriverVer del INF (12/24/2024)
+hardware_id = "Root\\MttVDD"
+iddcx = "1.2"                        # UmdfExtensions = IddCx0102
+url = "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip"
+zip_sha256 = "e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a"
+signer_subject = "CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US"
+config_dir = "C:\\VirtualDisplayDriver"   # fija en el driver (Driver.cpp: confpath)
+
+[files]
+"MttVDD.dll" = "c9ca837f57a98fbd43bc416a7f535a95843626e7759eaf85cf0cd7ce334dbb05"
+"MttVDD.inf" = "550d211fe481e74dfe3f9d724ed78be48b3a9113405965d683d9373e8d672f5d"
+"mttvdd.cat" = "08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6"
+"vdd_settings.xml" = "edb2501d6d5da17f66d15d4b97a6f4a3f0d8963165ac4a6a6259d95118288020"
+
+# Hallazgos de seguridad (PoC-1):
+# - La tubería de control \\.\pipe\MTTVirtualDisplayPipe se crea con SDDL
+#   "D:(A;;GA;;;WD)" (control total para Everyone) y sin PIPE_REJECT_REMOTE_CLIENTS:
+#   cualquier proceso local, o un usuario autenticado por SMB, puede cambiar
+#   la cantidad de monitores o la configuración. Impacto: configuración de
+#   pantalla (DoS o molestia), no ejecución de código. Mitigación definitiva:
+#   driver propio (F8).

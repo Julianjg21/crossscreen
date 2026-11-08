@@ -1,0 +1,30 @@
+[package]
+name = "crossscreen-desktop"
+description = "Panel de control de CrossScreen (Tauri 2): capa fina sobre el agente vía cs-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "crossscreen-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+cs-ipc.workspace = true
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json = "1"
+tokio = { workspace = true }
+
+[features]
+# `tauri build` activa esta feature para servir el frontend embebido
+# (`../dist`) en lugar del servidor de desarrollo de Vite.
+custom-protocol = ["tauri/custom-protocol"]
+
+[lints]
+workspace = true

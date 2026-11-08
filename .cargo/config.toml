@@ -1,0 +1,8 @@
+# Enlazar el runtime de C de forma estática en Windows (MSVC): los ejecutables
+# no dependen de VCRUNTIME140.dll y arrancan en un Windows recién instalado
+# sin el "Visual C++ Redistributable".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

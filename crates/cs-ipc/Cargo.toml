@@ -1,0 +1,29 @@
+[package]
+name = "cs-ipc"
+description = "IPC local autenticada entre la UI y el agente de CrossScreen (named pipe / socket Unix)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json = "1"
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  windows:
+    name: Windows (workspace completo)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      # El panel Tauri incrusta `apps/desktop/dist` al compilar: hay que generarlo antes.
+      - name: Frontend del panel
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+      - name: Formato
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Tests
+        run: cargo test --workspace
+
+  linux:
+    name: Linux (crates portables)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # Los crates de captura, codificación, visor y panel aún son solo de Windows.
+      - name: Clippy y tests
+        run: |
+          PKGS="-p cs-core -p cs-protocol -p cs-security -p cs-transport -p cs-discovery -p cs-session -p cs-ipc"
+          cargo clippy $PKGS --all-targets
+          cargo test $PKGS
+
+  licenses:
+    name: Licencias y advisories (cargo-deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

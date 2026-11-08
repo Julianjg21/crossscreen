@@ -1,0 +1,20 @@
+[package]
+name = "cs-core"
+description = "Tipos de dominio de CrossScreen, independientes del sistema operativo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+postcard.workspace = true
+
+[lints]
+workspace = true

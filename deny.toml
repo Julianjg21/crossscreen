@@ -1,0 +1,46 @@
+# Política de licencias: ver docs/adr/0001-licencia.md
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # atomic-polyfill (sin mantenimiento) llega vía postcard → heapless 0.7 y
+    # solo se compila en targets sin atómicas nativas (microcontroladores),
+    # nunca en Windows/Linux x86_64/aarch64. Revisar al subir postcard.
+    { id = "RUSTSEC-2023-0089", reason = "solo targets sin atómicas; no se compila en plataformas soportadas" },
+    # proc-macro-error (sin mantenimiento) llega vía tauri → gtk-rs 0.18 → glib-macros,
+    # solo en Linux y solo en tiempo de compilación (macro procedural; no va al binario).
+    # Se resolverá cuando Tauri actualice gtk-rs. Revisar al subir tauri.
+    { id = "RUSTSEC-2024-0370", reason = "macro de compilación de gtk-rs vía tauri, solo Linux; sin alternativa propia" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0", # solo a nivel de archivo (webpki-roots); no contamina
+]
+# GPL / AGPL / LGPL quedan rechazadas por omisión.
+# Excepciones LGPL (enlace dinámico) se añadirán aquí explícitamente con justificación.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Las dependencias internas por `path` no llevan versión; los crates son publish = false.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
