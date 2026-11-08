@@ -11,6 +11,7 @@ use bytes::Bytes;
 use cs_capture::windows_dxgi::{list_outputs, poll_cursor_in_rect, qpc_now_us};
 use cs_capture::{CaptureTarget, Rect};
 use cs_core::{Codec, Mode, Roles, StreamMode};
+use cs_input::{InputInjector, ScreenRect, SendInputInjector};
 use cs_protocol::control::{
     ByeReason, ControlMessage, CursorShape, Hello, SinkCapabilities, StartStream,
 };
@@ -338,6 +339,8 @@ pub(crate) async fn run(
     shape_rx.mark_changed();
     let (mut pos_alive, mut shape_alive) = (true, true);
     let mut peer_gone = false;
+    let _ = cs_input::make_process_per_monitor_dpi_aware();
+    let mut injector = SendInputInjector::new();
     let end_reason: String = 'session: loop {
         let drop_reason: String = loop {
             let deferred = coalescer
@@ -406,6 +409,25 @@ pub(crate) async fn run(
                     Ok(Some(ControlMessage::StopStream { .. })) => {
                         break 'session "el receptor pidió StopStream".into();
                     }
+                    Ok(Some(ControlMessage::Input(ev))) => {
+                        if cfg.accept_input && ev.stream_id() == STREAM_ID {
+                            if let Some(rect) = *rect_rx.borrow() {
+                                let target_rect = ScreenRect {
+                                    x: rect.left,
+                                    y: rect.top,
+                                    width: rect.width() as i32,
+                                    height: rect.height() as i32,
+                                };
+                                match injector.inject(&ev, target_rect) {
+                                    Ok(()) => cs.input_events_injected += 1,
+                                    Err(e) => {
+                                        cs.input_events_blocked += 1;
+                                        tracing::debug!("entrada remota no inyectada: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Ok(Some(other)) => tracing::debug!(?other, "mensaje de control ignorado"),
                     Ok(None) => {
                         peer_gone = true;
@@ -452,6 +474,10 @@ pub(crate) async fn run(
                 }
             }
         };
+
+        // Si se pierde la conexión, liberar al instante cualquier tecla o botón
+        // que el receptor hubiera dejado pulsado antes del corte.
+        let _ = injector.release_all();
 
         // Si no hay reconexión configurada (o grace == 0), terminar aquí.
         let Some(reconn) = cfg.reconnect.as_ref().filter(|r| !r.grace.is_zero()) else {
@@ -522,6 +548,7 @@ pub(crate) async fn run(
     };
     let duration = start.elapsed();
     println!("Fin de la sesión: {end_reason}");
+    let _ = injector.release_all();
 
     // Cierre: Bye (si el par sigue), parar el hilo, vaciar el envío, retirar
     // el monitor.

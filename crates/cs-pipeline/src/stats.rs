@@ -87,6 +87,9 @@ pub struct ControlStats {
     pub last_receiver_stats: Option<ReceiverStats>,
     /// Reconexiones completadas tras un corte temporal conservando el monitor virtual.
     pub reconnections: u64,
+    /// Eventos de entrada remota (ratón/teclado) inyectados y rechazados/bloqueados.
+    pub input_events_injected: u64,
+    pub input_events_blocked: u64,
     /// Cambios de paridad del FEC adaptativo y rango alcanzado.
     pub fec_changes: u64,
     pub fec_initial: f32,
@@ -218,12 +221,20 @@ impl fmt::Display for SenderReport {
         )?;
         writeln!(
             f,
-            "Cursor: {} posiciones y {} formas enviadas · ReceiverStats recibidos {}{}",
+            "Cursor: {} posiciones y {} formas enviadas · ReceiverStats recibidos {}{}{}",
             c.cursor_positions,
             c.cursor_shapes,
             c.receiver_stats,
             if c.reconnections > 0 {
                 format!(" · reconexiones {}", c.reconnections)
+            } else {
+                String::new()
+            },
+            if c.input_events_injected > 0 || c.input_events_blocked > 0 {
+                format!(
+                    " · entrada remota {} inyectados ({} bloqueados)",
+                    c.input_events_injected, c.input_events_blocked
+                )
             } else {
                 String::new()
             }

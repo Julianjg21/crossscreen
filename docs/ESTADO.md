@@ -5,19 +5,21 @@
 > - Al terminar tu sesión, actualiza "Trabajo en curso", "Próximos pasos" y añade una línea a la **Bitácora**: fecha, quién, qué se hizo y qué quedó a medias.
 > - Las reglas permanentes están en [`AGENTS.md`](../AGENTS.md).
 
-**Última actualización:** 2026-11-08, integración del streaming en `cs-ipc`, `crossscreen-agent`, `crossscreen-viewer` (anuncio mDNS del puerto de sesión) y el panel Tauri (`apps/desktop`).
+**Última actualización:** 2026-11-08, reconexión automática QUIC con ventana de gracia (15 s conservando el monitor virtual) e integración extremo a extremo de entrada remota / KVM (F6: `cs-input` + `ControlMessage::Input` entre visor y emisor).
 
 ## Resumen en una frase
-La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **validada y afinada sobre Wi-Fi real entre dos equipos (60 s a `1366×768@60`: pérdidas reducidas de 31 a 2 frames, peticiones `RequestKeyframe` de 104 a 1, cursor de 638 a 3 040 posiciones y `Captura→enviado` p50 18,1 / p95 25,6 / máx. 53,2 ms)** e integrada en `crossscreen-agent` y en el panel de escritorio Tauri (`Transmitir pantalla`).
+La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado con reconexión automática → decodificación → presentación con cursor + entrada remota de ratón y teclado), **validada y afinada sobre Wi-Fi real entre dos equipos (60 s a `1366×768@60`: pérdidas reducidas de 31 a 2 frames, peticiones `RequestKeyframe` de 104 a 1, cursor de 638 a 3 040 posiciones y `Captura→enviado` p50 18,1 / p95 25,6 / máx. 53,2 ms)** e integrada en `crossscreen-agent` y en el panel de escritorio Tauri (`Transmitir pantalla`).
 
 ## Fases (ver `docs/07-roadmap.md`)
 | Fase | Estado |
 |---|---|
 | F0 Fundamentos | ✅ En lo esencial (CI y release funcionando en GitHub) |
 | F1 PoC (Windows) | ✅ PoC-1, 2, 3 y 5; PoC-4 en loopback + pruebas reales Wi-Fi |
-| F2 MVP Windows → Windows | 🟡 Funciona en Wi-Fi real (`PC-A → PC-B`) e integrado en agente + panel Tauri; falta prueba por cable y estabilidad de 2 h |
-| F3 Extender en Windows | 🟡 Adelantada (VDD + CCD funcionando) |
+| F2 MVP Windows → Windows | 🟡 Funciona en Wi-Fi real (`PC-A → PC-B`), integrado en agente + panel Tauri y con reconexión QUIC automática; falta prueba por cable y estabilidad de 2 h |
+| F3 Extender en Windows | ✅ VDD + CCD funcionando, integrado en agente y con ventana de gracia de 15 s ante cortes de red |
 | F4 Linux | ⏳ No iniciada (no hay equipo Linux para probar) |
+| F5 Robustez y Wi-Fi | 🟡 FEC adaptativo + entrelazado, `DecodeThrough`, `KeyframeRequester` calmado y reconexión con ventana de gracia implementados |
+| F6 Entrada remota / KVM | 🟡 Protocolo `ControlMessage::Input`, crate `cs-input` (`SendInput` sobre escritorio virtual + liberación automática al desconectar) y captura en `crossscreen-viewer` integrados en Windows |
 
 ## Entorno de prueba real
 - **PC-A (fuente, se extiende):** portátil del dueño `DESKTOP-6K2V76S`.
@@ -97,3 +99,4 @@ Ninguno pendiente en el árbol de trabajo: el streaming está integrado en `cs-i
 | 2026-11-08 | Agente integrador | Integración de resiliencia Wi-Fi en receptor (`DecodeThrough`, `KeyframeRequester` calmado, `SeqTracker::note_lost`) y emisor/transporte (FEC IDR 0,5, entrelazado de bloques, `AdaptiveFec`, filtro `<1 RTT`, inyector Gilbert-Elliott y sonda `GradualIntraRefresh`); mediciones documentadas y release `v0.0.1-alpha.2`. |
 | 2026-11-08 | Dueño + agente | **Validación en Wi-Fi real (`PC-A → PC-B`, 60 s, `1366×768@60`):** corregido bloqueo de *pacing* (`paced = total - avail` y `set_rate_at`), escalado CBR por resolución (`8 094 kbps`), tope de ritmo para IDR, sondeo Win32 del cursor a 125 Hz + deduplicación de formas y tamaño inicial en `VideoDecoder`; pérdidas bajan de 31 a 2 frames y `RequestKeyframe` de 104 a 1. |
 | 2026-11-08 | Agente | **Integración de streaming y modo receptor en agente y panel Tauri:** `StartStream`/`StopStream` y `StartReceiver`/`StopReceiver` en `cs-ipc` (`v1.1`), ejecución de `cs_pipeline::run_sender` y gestión del proceso `crossscreen-viewer` con anuncio mDNS de `session_port` en `crossscreen-agent`, vista «Transmitir o recibir pantalla» en `apps/desktop` e inclusión de `crossscreen-desktop.exe` en el paquete `.zip` de Windows. |
+| 2026-11-08 | 2 agentes en paralelo | **Reconexión automática QUIC (F5) y entrada remota / KVM (F6):** ventana de gracia de 15 s en `cs-pipeline` que conserva vivo el monitor virtual y el hilo de captura mientras reconecta con el receptor; protocolo `ControlMessage::Input`, crate `cs-input` (`SendInput` en coordenadas del escritorio virtual + liberación de teclas/botones en `Drop` y en cortes de red) y captura de ratón/teclado en `crossscreen-viewer` integrados con `cs-pipeline`. |

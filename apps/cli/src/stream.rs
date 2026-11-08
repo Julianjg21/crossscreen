@@ -74,6 +74,9 @@ pub struct StreamArgs {
     /// manteniendo vivo el monitor virtual (0 = no reconectar).
     #[arg(long, default_value_t = 15.0)]
     pub reconnect_grace: f64,
+    /// Desactivar la inyección de entrada remota (ratón y teclado del receptor).
+    #[arg(long)]
+    pub no_remote_input: bool,
     /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
     /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
     #[arg(long)]
@@ -119,6 +122,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     cfg.duration = a.seconds.map(Duration::from_secs);
     cfg.static_refresh =
         (a.static_refresh > 0.0).then(|| Duration::from_secs_f64(a.static_refresh));
+    cfg.accept_input = !a.no_remote_input;
     cfg.sim_loss = a.sim_loss.map(|m| (m, a.sim_loss_seed));
 
     // Señal de parada: Ctrl+C, Ctrl+Break y cierre de la consola.

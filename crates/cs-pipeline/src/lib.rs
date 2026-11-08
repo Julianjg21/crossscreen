@@ -78,6 +78,9 @@ pub struct SenderConfig {
     /// Si `Some`, ante pérdida de conexión QUIC intenta reconectar durante
     /// `grace` conservando el monitor virtual y el hilo de captura.
     pub reconnect: Option<ReconnectConfig>,
+    /// Permitir que el receptor inyecte eventos de ratón y teclado (F6) en el
+    /// rectángulo del monitor transmitido.
+    pub accept_input: bool,
     /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
     /// `(modelo, semilla)`.
     pub sim_loss: Option<(LossModel, u64)>,
@@ -104,6 +107,7 @@ impl SenderConfig {
             duration: None,
             static_refresh: Some(Duration::from_secs(1)),
             reconnect: None,
+            accept_input: true,
             sim_loss: None,
         }
     }

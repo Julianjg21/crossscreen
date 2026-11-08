@@ -272,6 +272,10 @@ pub struct StreamReportInfo {
     pub dropped_after_encode: u64,
     pub idr_sent: u64,
     pub keyframe_requests: u64,
+    #[serde(default)]
+    pub reconnections: u64,
+    #[serde(default)]
+    pub input_events_injected: u64,
     pub payload_bytes: u64,
     pub wire_bytes: u64,
     pub datagrams_sent: u64,
@@ -506,6 +510,8 @@ mod tests {
                         dropped_after_encode: 0,
                         idr_sent: 4,
                         keyframe_requests: 1,
+                        reconnections: 0,
+                        input_events_injected: 0,
                         payload_bytes: 30_000_000,
                         wire_bytes: 34_000_000,
                         datagrams_sent: 25_382,

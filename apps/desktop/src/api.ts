@@ -99,6 +99,8 @@ export interface StreamReportInfo {
   dropped_after_encode: number;
   idr_sent: number;
   keyframe_requests: number;
+  reconnections?: number;
+  input_events_injected?: number;
   payload_bytes: number;
   wire_bytes: number;
   datagrams_sent: number;

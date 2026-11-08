@@ -395,7 +395,10 @@ async fn run(
                     continue;
                 }
             },
-            _ = cmd_rx.recv() => break,
+            cmd = cmd_rx.recv() => match cmd {
+                Some(UiCmd::Shutdown) | None => break,
+                Some(UiCmd::Input(_)) => continue,
+            },
         };
         // Segunda comprobación tras el handshake: el par pudo ser olvidado
         // mientras se esperaba la conexión. Si no se puede releer, se rechaza.
@@ -804,9 +807,15 @@ async fn streaming(
                 });
                 ctl.send(&msg).await?;
             }
-            _ = cmd_rx.recv() => {
-                let _ = ctl.send(&ControlMessage::Bye { reason: ByeReason::UserRequested }).await;
-                break Exit::Shutdown;
+            cmd = cmd_rx.recv() => match cmd {
+                Some(UiCmd::Input(ev)) => {
+                    ctl.send(&ControlMessage::Input(ev)).await?;
+                    lock().input_events_sent += 1;
+                }
+                Some(UiCmd::Shutdown) | None => {
+                    let _ = ctl.send(&ControlMessage::Bye { reason: ByeReason::UserRequested }).await;
+                    break Exit::Shutdown;
+                }
             }
         }
     };

@@ -112,6 +112,9 @@ pub struct Args {
     /// Ocultar el cursor superpuesto de demostración (solo `--file`).
     #[arg(long)]
     pub no_cursor: bool,
+    /// Desactivar el envío de entrada remota (ratón y teclado locales hacia la fuente).
+    #[arg(long)]
+    pub no_remote_input: bool,
 }
 
 #[cfg(windows)]

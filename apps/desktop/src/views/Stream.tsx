@@ -589,7 +589,7 @@ export default function Stream({
               <dt>IDR y recuperaciones</dt>
               <dd>
                 {lastReport.idr_sent} IDR enviados · {lastReport.keyframe_requests} peticiones del
-                receptor
+                receptor · {lastReport.reconnections ?? 0} reconexiones QUIC
               </dd>
               {lastReport.duration_ms > 0 && (
                 <>
@@ -614,10 +614,11 @@ export default function Stream({
               <dd>
                 {lastReport.datagrams_sent} enviados, {lastReport.datagrams_failed} fallidos
               </dd>
-              <dt>Cursor</dt>
+              <dt>Cursor y entrada</dt>
               <dd>
                 {lastReport.cursor_positions} posiciones y {lastReport.cursor_shapes} formas
-                enviadas
+                enviadas · {lastReport.input_events_injected ?? 0} eventos de entrada remota
+                inyectados
               </dd>
               <dt>Captura (CPU)</dt>
               <dd>{formatLatency(lastReport.capture_us)}</dd>

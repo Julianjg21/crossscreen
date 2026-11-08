@@ -18,6 +18,7 @@ use crate::{clock, parse_size, save_png, Args};
 use anyhow::{anyhow, Context, Result};
 use cs_core::Mode;
 use cs_decode::create_d3d11_device;
+use cs_protocol::control::{ButtonState, InputEvent, MouseButton as ProtoMouseButton};
 use cs_render::{FrameRef, Renderer, RendererOptions};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -26,9 +27,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::monitor::MonitorHandle;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Fullscreen, Window, WindowId};
@@ -91,6 +92,11 @@ struct Session {
     /// Instante del último `Present` con un frame de vídeo nuevo (para
     /// medir congelaciones).
     last_video_present: Option<Instant>,
+    /// Posición inicial del cursor local al abrir la ventana, para no teletransportar
+    /// el ratón del emisor por el `WM_MOUSEMOVE` sintético de creación de ventana.
+    initial_local_cursor: Option<(f64, f64)>,
+    /// `true` en cuanto el usuario mueve o pulsa físicamente el ratón en el receptor.
+    local_mouse_engaged: bool,
 }
 
 impl Session {
@@ -276,8 +282,20 @@ impl ListenApp {
             cursor_deadline: Some(Instant::now()),
             screenshot_done: false,
             last_video_present: None,
+            initial_local_cursor: None,
+            local_mouse_engaged: false,
         });
         Ok(())
+    }
+
+    fn remote_input_enabled(&self) -> bool {
+        !self.args.no_remote_input && !self.args.same_host_latency
+    }
+
+    fn send_input(&self, ev: InputEvent) {
+        if let Some(tx) = &self.net_cmd {
+            let _ = tx.send(UiCmd::Input(ev));
+        }
     }
 
     fn end_session(&mut self, reason: &str) {
@@ -470,6 +488,123 @@ impl ApplicationHandler<UserEvent> for ListenApp {
             {
                 self.request_shutdown(el)
             }
+            WindowEvent::KeyboardInput { event, .. } if self.remote_input_enabled() => {
+                if self.session.is_some() {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        if let Some((scancode, extended)) = keycode_to_scancode(code) {
+                            let state = match event.state {
+                                ElementState::Pressed => ButtonState::Pressed,
+                                ElementState::Released => ButtonState::Released,
+                            };
+                            self.send_input(InputEvent::Key {
+                                stream_id: net::STREAM_ID,
+                                scancode,
+                                extended,
+                                state,
+                            });
+                        }
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } if self.remote_input_enabled() => {
+                let norm = if let Some(s) = self.session.as_mut() {
+                    if !s.local_mouse_engaged {
+                        match s.initial_local_cursor {
+                            None => {
+                                s.initial_local_cursor = Some((position.x, position.y));
+                                None
+                            }
+                            Some((x0, y0)) if (position.x - x0).hypot(position.y - y0) >= 3.0 => {
+                                s.local_mouse_engaged = true;
+                                let sz = s.window.inner_size();
+                                Some((
+                                    norm_coord(position.x, sz.width),
+                                    norm_coord(position.y, sz.height),
+                                ))
+                            }
+                            Some(_) => None,
+                        }
+                    } else {
+                        let sz = s.window.inner_size();
+                        Some((
+                            norm_coord(position.x, sz.width),
+                            norm_coord(position.y, sz.height),
+                        ))
+                    }
+                } else {
+                    None
+                };
+                if let Some((x_norm, y_norm)) = norm {
+                    self.send_input(InputEvent::MouseMove {
+                        stream_id: net::STREAM_ID,
+                        x_norm,
+                        y_norm,
+                    });
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } if self.remote_input_enabled() => {
+                let first_engage_pos = if let Some(s) = self.session.as_mut() {
+                    let pos = if !s.local_mouse_engaged {
+                        s.local_mouse_engaged = true;
+                        s.initial_local_cursor.map(|(x, y)| {
+                            let sz = s.window.inner_size();
+                            (norm_coord(x, sz.width), norm_coord(y, sz.height))
+                        })
+                    } else {
+                        None
+                    };
+                    Some(pos)
+                } else {
+                    None
+                };
+                if let Some(pos) = first_engage_pos {
+                    if let Some((x_norm, y_norm)) = pos {
+                        self.send_input(InputEvent::MouseMove {
+                            stream_id: net::STREAM_ID,
+                            x_norm,
+                            y_norm,
+                        });
+                    }
+                    if let Some(button) = map_mouse_button(button) {
+                        let state = match state {
+                            ElementState::Pressed => ButtonState::Pressed,
+                            ElementState::Released => ButtonState::Released,
+                        };
+                        self.send_input(InputEvent::MouseButton {
+                            stream_id: net::STREAM_ID,
+                            button,
+                            state,
+                        });
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.remote_input_enabled() => {
+                if self.session.is_some() {
+                    let (dx, dy) = match delta {
+                        MouseScrollDelta::LineDelta(lx, ly) => (
+                            (lx * 120.0)
+                                .round()
+                                .clamp(f32::from(i16::MIN), f32::from(i16::MAX))
+                                as i16,
+                            (ly * 120.0)
+                                .round()
+                                .clamp(f32::from(i16::MIN), f32::from(i16::MAX))
+                                as i16,
+                        ),
+                        MouseScrollDelta::PixelDelta(p) => (
+                            p.x.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16,
+                            p.y.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16,
+                        ),
+                    };
+                    if dx != 0 || dy != 0 {
+                        self.send_input(InputEvent::MouseWheel {
+                            stream_id: net::STREAM_ID,
+                            delta_x: dx,
+                            delta_y: dy,
+                        });
+                    }
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(s) = self.session.as_mut() {
                     if let Err(e) = s.renderer.resize(size.width, size.height) {
@@ -521,5 +656,173 @@ impl ApplicationHandler<UserEvent> for ListenApp {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         });
+    }
+}
+
+/// Convierte una coordenada local `0..size` en `0..=65535`.
+fn norm_coord(pos: f64, size: u32) -> u16 {
+    if size <= 1 {
+        return 0;
+    }
+    let max_idx = f64::from(size - 1);
+    let clamped = pos.clamp(0.0, max_idx);
+    ((clamped * 65535.0 / max_idx).round() as u32).min(65535) as u16
+}
+
+fn map_mouse_button(b: WinitMouseButton) -> Option<ProtoMouseButton> {
+    match b {
+        WinitMouseButton::Left => Some(ProtoMouseButton::Left),
+        WinitMouseButton::Right => Some(ProtoMouseButton::Right),
+        WinitMouseButton::Middle => Some(ProtoMouseButton::Middle),
+        WinitMouseButton::Back => Some(ProtoMouseButton::Back),
+        WinitMouseButton::Forward => Some(ProtoMouseButton::Forward),
+        WinitMouseButton::Other(_) => None,
+    }
+}
+
+/// Traduce `winit::keyboard::KeyCode` a un *scan code* del conjunto 1 de PC
+/// (`0x01..=0xFF`) e indicador de prefijo `E0` (`extended`).
+fn keycode_to_scancode(code: KeyCode) -> Option<(u16, bool)> {
+    use KeyCode::*;
+    let pair = match code {
+        Escape => (0x01, false),
+        Digit1 => (0x02, false),
+        Digit2 => (0x03, false),
+        Digit3 => (0x04, false),
+        Digit4 => (0x05, false),
+        Digit5 => (0x06, false),
+        Digit6 => (0x07, false),
+        Digit7 => (0x08, false),
+        Digit8 => (0x09, false),
+        Digit9 => (0x0A, false),
+        Digit0 => (0x0B, false),
+        Minus => (0x0C, false),
+        Equal => (0x0D, false),
+        Backspace => (0x0E, false),
+        Tab => (0x0F, false),
+        KeyQ => (0x10, false),
+        KeyW => (0x11, false),
+        KeyE => (0x12, false),
+        KeyR => (0x13, false),
+        KeyT => (0x14, false),
+        KeyY => (0x15, false),
+        KeyU => (0x16, false),
+        KeyI => (0x17, false),
+        KeyO => (0x18, false),
+        KeyP => (0x19, false),
+        BracketLeft => (0x1A, false),
+        BracketRight => (0x1B, false),
+        Enter => (0x1C, false),
+        ControlLeft => (0x1D, false),
+        KeyA => (0x1E, false),
+        KeyS => (0x1F, false),
+        KeyD => (0x20, false),
+        KeyF => (0x21, false),
+        KeyG => (0x22, false),
+        KeyH => (0x23, false),
+        KeyJ => (0x24, false),
+        KeyK => (0x25, false),
+        KeyL => (0x26, false),
+        Semicolon => (0x27, false),
+        Quote => (0x28, false),
+        Backquote => (0x29, false),
+        ShiftLeft => (0x2A, false),
+        Backslash => (0x2B, false),
+        KeyZ => (0x2C, false),
+        KeyX => (0x2D, false),
+        KeyC => (0x2E, false),
+        KeyV => (0x2F, false),
+        KeyB => (0x30, false),
+        KeyN => (0x31, false),
+        KeyM => (0x32, false),
+        Comma => (0x33, false),
+        Period => (0x34, false),
+        Slash => (0x35, false),
+        ShiftRight => (0x36, false),
+        NumpadMultiply => (0x37, false),
+        AltLeft => (0x38, false),
+        Space => (0x39, false),
+        CapsLock => (0x3A, false),
+        F1 => (0x3B, false),
+        F2 => (0x3C, false),
+        F3 => (0x3D, false),
+        F4 => (0x3E, false),
+        F5 => (0x3F, false),
+        F6 => (0x40, false),
+        F7 => (0x41, false),
+        F8 => (0x42, false),
+        F9 => (0x43, false),
+        F10 => (0x44, false),
+        NumLock => (0x45, false),
+        ScrollLock => (0x46, false),
+        Numpad7 => (0x47, false),
+        Numpad8 => (0x48, false),
+        Numpad9 => (0x49, false),
+        NumpadSubtract => (0x4A, false),
+        Numpad4 => (0x4B, false),
+        Numpad5 => (0x4C, false),
+        Numpad6 => (0x4D, false),
+        NumpadAdd => (0x4E, false),
+        Numpad1 => (0x4F, false),
+        Numpad2 => (0x50, false),
+        Numpad3 => (0x51, false),
+        Numpad0 => (0x52, false),
+        NumpadDecimal => (0x53, false),
+        IntlBackslash => (0x56, false),
+        F11 => (0x57, false),
+        F12 => (0x58, false),
+        NumpadEnter => (0x1C, true),
+        ControlRight => (0x1D, true),
+        NumpadDivide => (0x35, true),
+        PrintScreen => (0x37, true),
+        AltRight => (0x38, true),
+        Home => (0x47, true),
+        ArrowUp => (0x48, true),
+        PageUp => (0x49, true),
+        ArrowLeft => (0x4B, true),
+        ArrowRight => (0x4D, true),
+        End => (0x4F, true),
+        ArrowDown => (0x50, true),
+        PageDown => (0x51, true),
+        Insert => (0x52, true),
+        Delete => (0x53, true),
+        SuperLeft => (0x5B, true),
+        SuperRight => (0x5C, true),
+        ContextMenu => (0x5D, true),
+        _ => return None,
+    };
+    Some(pair)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn norm_coord_maps_edges_and_center() {
+        assert_eq!(norm_coord(0.0, 1366), 0);
+        assert_eq!(norm_coord(1365.0, 1366), 65535);
+        assert_eq!(norm_coord(-10.0, 1366), 0);
+        assert_eq!(norm_coord(9999.0, 1366), 65535);
+        assert_eq!(norm_coord(959.5, 1920), 32768);
+    }
+
+    #[test]
+    fn keycode_scancodes_match_pc_set1() {
+        assert_eq!(keycode_to_scancode(KeyCode::KeyA), Some((0x1E, false)));
+        assert_eq!(keycode_to_scancode(KeyCode::Enter), Some((0x1C, false)));
+        assert_eq!(
+            keycode_to_scancode(KeyCode::NumpadEnter),
+            Some((0x1C, true))
+        );
+        assert_eq!(keycode_to_scancode(KeyCode::ArrowLeft), Some((0x4B, true)));
+        assert_eq!(
+            keycode_to_scancode(KeyCode::ControlLeft),
+            Some((0x1D, false))
+        );
+        assert_eq!(
+            keycode_to_scancode(KeyCode::ControlRight),
+            Some((0x1D, true))
+        );
     }
 }

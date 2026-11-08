@@ -82,10 +82,12 @@ pub enum KeyframePolicy {
 }
 
 /// Órdenes del hilo de la ventana al de red.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCmd {
     /// Cerrar la sesión en curso (si la hay) con `Bye` y dejar de escuchar.
     Shutdown,
+    /// Evento de entrada local (ratón o teclado) para enviar a la fuente.
+    Input(cs_protocol::control::InputEvent),
 }
 
 /// Entrada del hilo de decodificación (en orden de llegada).
@@ -167,6 +169,7 @@ pub struct SessionStats {
     pub rtt: Duration,
     pub cursor_shapes: u64,
     pub cursor_positions: u64,
+    pub input_events_sent: u64,
     // Decodificación.
     pub frames_decoded: u64,
     pub decode_errors: u64,
@@ -273,13 +276,18 @@ impl SessionStats {
             self.rtt.as_secs_f64() * 1e3
         );
         println!(
-            "presentación: {} frames ({:.1} fps, {} con posibles artefactos), {} repintados solo de cursor; cursor: {} formas, {} posiciones",
+            "presentación: {} frames ({:.1} fps, {} con posibles artefactos), {} repintados solo de cursor; cursor: {} formas, {} posiciones{}",
             self.frames_presented,
             fps(self.frames_presented),
             self.frames_presented_concealed,
             self.cursor_only_presents,
             self.cursor_shapes,
-            self.cursor_positions
+            self.cursor_positions,
+            if self.input_events_sent > 0 {
+                format!("; entrada remota enviada: {} eventos", self.input_events_sent)
+            } else {
+                String::new()
+            }
         );
         println!(
             "congelaciones (> {} ms sin frame nuevo): {}, {:.0} ms en total, la más larga {:.0} ms",
