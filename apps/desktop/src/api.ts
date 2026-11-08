@@ -147,9 +147,10 @@ export type Request =
       mode_override: ModeInfo | null;
       bitrate_kbps: number;
       profile: StreamProfileInfo;
+      clipboard: boolean;
     }
   | { kind: "stop_stream" }
-  | { kind: "start_receiver"; port: number; fullscreen: boolean }
+  | { kind: "start_receiver"; port: number; fullscreen: boolean; clipboard: boolean }
   | { kind: "stop_receiver" };
 
 export type Response =

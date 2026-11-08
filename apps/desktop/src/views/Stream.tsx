@@ -76,11 +76,13 @@ export default function Stream({
   const [addr, setAddr] = useState(initialAddr ?? "");
   const [mode, setMode] = useState<StreamModeInfo>("extend");
   const [profile, setProfile] = useState<StreamProfileInfo>("auto");
+  const [clipboard, setClipboard] = useState(false);
   const [resOption, setResOption] = useState("native");
   const [hz, setHz] = useState(60);
   const [mbps, setMbps] = useState("20");
   const [rxPort, setRxPort] = useState(String(DEFAULT_PORT));
   const [rxFullscreen, setRxFullscreen] = useState(true);
+  const [rxClipboard, setRxClipboard] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rxBusy, setRxBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -229,6 +231,7 @@ export default function Stream({
           mode_override: modeOverride,
           bitrate_kbps: Math.round(mbpsNum * 1000),
           profile,
+          clipboard,
         },
         "stream_started",
       );
@@ -266,7 +269,7 @@ export default function Stream({
     setRxBusy(true);
     try {
       const r = await call(
-        { kind: "start_receiver", port: portNum, fullscreen: rxFullscreen },
+        { kind: "start_receiver", port: portNum, fullscreen: rxFullscreen, clipboard: rxClipboard },
         "receiver_started",
       );
       setReceiver(r.receiver);
@@ -446,6 +449,20 @@ export default function Stream({
                 )}
               </div>
 
+              <label style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={clipboard}
+                  onChange={(e) => setClipboard(e.target.checked)}
+                  aria-describedby="stream-clipboard-help"
+                />
+                <span>Sincronizar el portapapeles de texto con el receptor</span>
+              </label>
+              <p id="stream-clipboard-help" className="muted" style={{ marginTop: 4 }}>
+                Lo que copies en este equipo se enviará al otro, y al revés. Desactivado por
+                defecto: el portapapeles puede contener contraseñas u otros datos sensibles.
+              </p>
+
               <label htmlFor="stream-profile" style={{ marginTop: 12 }}>
                 Perfil de red
               </label>
@@ -548,6 +565,21 @@ export default function Stream({
                   <option value="fullscreen">Pantalla completa</option>
                   <option value="window">En ventana (1920 × 1080)</option>
                 </select>
+              </div>
+              <div className="field">
+                <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                  <input
+                    type="checkbox"
+                    checked={rxClipboard}
+                    onChange={(e) => setRxClipboard(e.target.checked)}
+                    aria-describedby="rx-clipboard-help"
+                  />
+                  <span>Sincronizar el portapapeles de texto con el emisor</span>
+                </label>
+                <p id="rx-clipboard-help" className="muted" style={{ marginTop: 4 }}>
+                  Desactivado por defecto: el portapapeles puede contener datos sensibles.
+                  Para que funcione, el emisor también debe activarlo.
+                </p>
               </div>
               <div className="actions">
                 <button

@@ -91,6 +91,10 @@ pub struct ClipboardSync {
     last_remote_seq: Option<u64>,
     /// Último texto local rechazado por tamaño, para avisar una sola vez.
     last_rejected: Option<TextHash>,
+    /// Secuencia del SO al arrancar cuando la lectura inicial falló.
+    unread_prime_seq: Option<u32>,
+    /// La lectura en curso corresponde a esa secuencia inicial: no enviar.
+    suppress_next_read: bool,
     stats: SyncStats,
 }
 
@@ -122,6 +126,17 @@ impl ClipboardSync {
         self.local_has = text.map(|t| hash_text(&text::canonicalize(t)));
     }
 
+    /// Como [`prime`](Self::prime) cuando la lectura inicial falló (p. ej.
+    /// portapapeles ocupado). Se recuerda la secuencia del arranque: si la
+    /// primera lectura que funcione ocurre **con esa misma secuencia**, el
+    /// contenido es anterior a la sesión y solo se registra, sin enviarlo.
+    /// (Sin esto, lo copiado antes de conectar se enviaría al par: *fail-open*.)
+    pub fn prime_unread(&mut self, os_seq: u32) {
+        self.last_seen_os_seq = None;
+        self.local_has = None;
+        self.unread_prime_seq = Some(os_seq);
+    }
+
     /// Olvida el último número de secuencia visto para que el próximo sondeo
     /// vuelva a leer (p. ej. si la lectura falló porque otro proceso tenía el
     /// portapapeles abierto).
@@ -142,6 +157,9 @@ impl ClipboardSync {
             self.stats.echoes_suppressed += 1;
             return false;
         }
+        // Contenido anterior a la sesión pendiente de registrar (ver
+        // `prime_unread`): se lee para fijar `local_has`, pero no se envía.
+        self.suppress_next_read = self.unread_prime_seq == Some(os_seq);
         true
     }
 
@@ -149,9 +167,17 @@ impl ClipboardSync {
     /// contenido de texto tal como lo da el SO (o `None` si no hay texto).
     /// Devuelve el mensaje a enviar al par, si procede.
     pub fn on_local_change(&mut self, text: Option<&str>) -> Option<ClipboardText> {
+        let suppress = std::mem::take(&mut self.suppress_next_read);
+        if suppress {
+            // Primera lectura con la secuencia del arranque: fija la línea base.
+            self.unread_prime_seq = None;
+        }
         let canonical = text::canonicalize(text?);
         let hash = hash_text(&canonical);
         self.local_has = Some(hash);
+        if suppress {
+            return None;
+        }
         if let Err(e) = validate_text(&canonical) {
             if matches!(e, ClipboardError::TooLarge(_)) && self.last_rejected != Some(hash) {
                 self.last_rejected = Some(hash);
@@ -441,6 +467,49 @@ mod tests {
         assert_eq!(act, RemoteAction::AlreadyPresent);
         os.user_copies("nuevo");
         assert_eq!(poll(&mut a, &os).unwrap().text, "nuevo");
+    }
+
+    #[test]
+    fn failed_initial_read_does_not_leak_pre_session_content() {
+        let mut a = ClipboardSync::new();
+        let mut os = FakeOs::default();
+        os.user_copies("contraseña copiada antes de conectar");
+        // La lectura inicial falló (portapapeles ocupado).
+        a.prime_unread(os.seq);
+        // El siguiente sondeo lee con la MISMA secuencia: no se envía.
+        assert!(poll(&mut a, &os).is_none());
+        assert_eq!(a.stats().sent, 0);
+        // Y tampoco en sondeos posteriores sin cambios.
+        assert!(poll(&mut a, &os).is_none());
+        // Un cambio real posterior sí se envía.
+        os.user_copies("nuevo");
+        assert_eq!(poll(&mut a, &os).unwrap().text, "nuevo");
+    }
+
+    #[test]
+    fn failed_initial_read_then_busy_read_still_does_not_leak() {
+        let mut a = ClipboardSync::new();
+        let mut os = FakeOs::default();
+        os.user_copies("secreto previo");
+        a.prime_unread(os.seq);
+        // Primer intento: should_read = true pero la lectura vuelve a fallar.
+        assert!(a.should_read(os.seq));
+        a.forget_seen();
+        // Segundo intento con la misma secuencia: sigue sin enviarse.
+        assert!(poll(&mut a, &os).is_none());
+        assert_eq!(a.stats().sent, 0);
+    }
+
+    #[test]
+    fn content_changed_before_first_successful_read_is_sent() {
+        // Si la secuencia cambió desde el arranque, el contenido es nuevo
+        // (copiado ya durante la sesión) y sí debe enviarse.
+        let mut a = ClipboardSync::new();
+        let mut os = FakeOs::default();
+        os.user_copies("previo");
+        a.prime_unread(os.seq);
+        os.user_copies("copiado durante la sesión");
+        assert_eq!(poll(&mut a, &os).unwrap().text, "copiado durante la sesión");
     }
 
     #[test]

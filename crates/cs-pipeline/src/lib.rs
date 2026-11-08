@@ -83,6 +83,9 @@ pub struct SenderConfig {
     pub accept_input: bool,
     /// Sincronizar el portapapeles de texto con el receptor (F7), en ambos
     /// sentidos. Solo los cambios posteriores al inicio de la sesión.
+    /// **Desactivado por defecto:** el portapapeles puede contener datos
+    /// sensibles (p. ej. contraseñas copiadas por un gestor); el usuario debe
+    /// activarlo de forma explícita.
     pub clipboard: bool,
     /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
     /// `(modelo, semilla)`.
@@ -111,7 +114,7 @@ impl SenderConfig {
             static_refresh: Some(Duration::from_secs(1)),
             reconnect: None,
             accept_input: true,
-            clipboard: true,
+            clipboard: false,
             sim_loss: None,
         }
     }

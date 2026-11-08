@@ -10,17 +10,37 @@
 //!     m = ctl.recv() => if let Some(ControlMessage::ClipboardText(t)) = m? { clip.deliver(t) },
 //! }
 //! ```
+//!
+//! Memoria acotada: los textos remotos pendientes de aplicar no se encolan;
+//! hay una sola ranura y **el último sustituye al anterior** (solo importa el
+//! contenido más reciente). Así un par no puede agotar la memoria enviando
+//! muchos textos de 1 MiB más rápido de lo que se aplican.
 
 use crate::{ClipboardError, ClipboardText, SyncStats};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// Intervalo de sondeo recomendado: el portapapeles cambia a escala humana.
 pub const DEFAULT_POLL: Duration = Duration::from_millis(250);
 
+/// Ranura "el último gana" para textos remotos, con aviso al hilo.
+#[derive(Debug, Default)]
+struct Slot {
+    state: Mutex<SlotState>,
+    cv: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct SlotState {
+    pending: Option<ClipboardText>,
+    closed: bool,
+    /// Textos remotos sustituidos antes de aplicarse.
+    overwritten: u64,
+}
+
 #[derive(Debug)]
 pub struct ClipboardBridge {
-    incoming: std::sync::mpsc::Sender<ClipboardText>,
+    slot: Arc<Slot>,
     outgoing: tokio::sync::mpsc::UnboundedReceiver<ClipboardText>,
     stats: Arc<Mutex<SyncStats>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -32,14 +52,14 @@ impl ClipboardBridge {
     pub fn spawn(poll: Duration) -> Result<Self, ClipboardError> {
         #[cfg(windows)]
         {
-            let (in_tx, in_rx) = std::sync::mpsc::channel::<ClipboardText>();
+            let slot = Arc::new(Slot::default());
             let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
             let stats = Arc::new(Mutex::new(SyncStats::default()));
             let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-            let st = stats.clone();
+            let (sl, st) = (slot.clone(), stats.clone());
             let thread = std::thread::Builder::new()
                 .name("cs-clipboard".into())
-                .spawn(move || win_worker(poll, in_rx, out_tx, st, ready_tx))
+                .spawn(move || win_worker(poll, sl, out_tx, st, ready_tx))
                 .map_err(|_| ClipboardError::Os {
                     call: "thread::spawn",
                     code: 0,
@@ -54,7 +74,7 @@ impl ClipboardBridge {
                 Err(_) => return Err(ClipboardError::Unsupported),
             }
             Ok(ClipboardBridge {
-                incoming: in_tx,
+                slot,
                 outgoing: out_rx,
                 stats,
                 thread: Some(thread),
@@ -68,8 +88,14 @@ impl ClipboardBridge {
     }
 
     /// Texto recibido del par: se aplicará al portapapeles local (sin eco).
+    /// Si aún había otro pendiente, este lo sustituye.
     pub fn deliver(&self, msg: ClipboardText) {
-        let _ = self.incoming.send(msg);
+        if let Ok(mut s) = self.slot.state.lock() {
+            if s.pending.replace(msg).is_some() {
+                s.overwritten += 1;
+            }
+        }
+        self.slot.cv.notify_one();
     }
 
     /// Siguiente texto local que hay que enviar al par. `None` si el hilo terminó.
@@ -80,13 +106,19 @@ impl ClipboardBridge {
     pub fn stats(&self) -> SyncStats {
         self.stats.lock().map(|s| *s).unwrap_or_default()
     }
+
+    /// Textos remotos que se sustituyeron antes de poder aplicarse.
+    pub fn remote_overwritten(&self) -> u64 {
+        self.slot.state.lock().map(|s| s.overwritten).unwrap_or(0)
+    }
 }
 
 impl Drop for ClipboardBridge {
     fn drop(&mut self) {
-        // Cerrar el canal de entrada despierta y termina el hilo.
-        let (dead_tx, _) = std::sync::mpsc::channel();
-        drop(std::mem::replace(&mut self.incoming, dead_tx));
+        if let Ok(mut s) = self.slot.state.lock() {
+            s.closed = true;
+        }
+        self.slot.cv.notify_one();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -101,16 +133,28 @@ pub async fn next_outgoing(bridge: &mut Option<ClipboardBridge>) -> Option<Clipb
     }
 }
 
+/// Espera hasta `poll` a que llegue un texto remoto. `Err(())` si se cerró.
+fn wait_remote(slot: &Slot, poll: Duration) -> Result<Option<ClipboardText>, ()> {
+    let guard = slot.state.lock().map_err(|_| ())?;
+    let (mut guard, _) = slot
+        .cv
+        .wait_timeout_while(guard, poll, |s| s.pending.is_none() && !s.closed)
+        .map_err(|_| ())?;
+    if guard.closed {
+        return Err(());
+    }
+    Ok(guard.pending.take())
+}
+
 #[cfg(windows)]
 fn win_worker(
     poll: Duration,
-    incoming: std::sync::mpsc::Receiver<ClipboardText>,
+    slot: Arc<Slot>,
     outgoing: tokio::sync::mpsc::UnboundedSender<ClipboardText>,
     stats: Arc<Mutex<SyncStats>>,
     ready: std::sync::mpsc::Sender<Result<(), ClipboardError>>,
 ) {
     use crate::{ClipboardSync, RemoteAction, Win32Clipboard};
-    use std::sync::mpsc::RecvTimeoutError;
 
     let cb = match Win32Clipboard::new() {
         Ok(cb) => cb,
@@ -124,9 +168,10 @@ fn win_worker(
     match cb.read_text() {
         Ok(t) => sync.prime(seq, t.as_deref()),
         Err(e) => {
+            // No "fail-open": lo copiado antes de conectar no se enviará aunque
+            // la primera lectura válida llegue más tarde.
             tracing::debug!("portapapeles: lectura inicial fallida ({e}); se reintentará");
-            sync.prime(seq, None);
-            sync.forget_seen();
+            sync.prime_unread(seq);
         }
     }
     let _ = ready.send(Ok(()));
@@ -135,14 +180,14 @@ fn win_worker(
 
     loop {
         // Esperar un texto remoto o el siguiente sondeo, lo que llegue antes.
-        match incoming.recv_timeout(poll) {
-            Ok(msg) => match sync.on_remote(&msg) {
+        match wait_remote(&slot, poll) {
+            Ok(Some(msg)) => match sync.on_remote(&msg) {
                 Ok(RemoteAction::Apply(t)) => pending = Some(t),
                 Ok(RemoteAction::AlreadyPresent | RemoteAction::Stale) => {}
                 Err(e) => tracing::warn!("portapapeles remoto rechazado: {e}"),
             },
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Ok(None) => {}
+            Err(()) => break,
         }
         if let Some(t) = pending.take() {
             match cb.write_text(&t) {
@@ -169,5 +214,57 @@ fn win_worker(
         if let Ok(mut s) = stats.lock() {
             *s = sync.stats();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(seq: u64, n: usize) -> ClipboardText {
+        ClipboardText {
+            seq,
+            text: "x".repeat(n),
+        }
+    }
+
+    #[test]
+    fn slot_keeps_only_latest_remote_text() {
+        let slot = Slot::default();
+        for i in 1..=1000 {
+            let mut s = slot.state.lock().unwrap();
+            if s.pending.replace(msg(i, 1024)).is_some() {
+                s.overwritten += 1;
+            }
+        }
+        let got = wait_remote(&slot, Duration::from_millis(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.seq, 1000, "solo queda el último");
+        assert_eq!(slot.state.lock().unwrap().overwritten, 999);
+        assert!(wait_remote(&slot, Duration::from_millis(1))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn wait_wakes_on_delivery_and_reports_close() {
+        let slot = Arc::new(Slot::default());
+        let s2 = slot.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            s2.state.lock().unwrap().pending = Some(msg(7, 3));
+            s2.cv.notify_one();
+        });
+        let start = std::time::Instant::now();
+        let got = wait_remote(&slot, Duration::from_secs(5)).unwrap();
+        assert_eq!(got.unwrap().seq, 7);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "despierta sin esperar al sondeo"
+        );
+        t.join().unwrap();
+        slot.state.lock().unwrap().closed = true;
+        assert!(wait_remote(&slot, Duration::from_secs(5)).is_err());
     }
 }

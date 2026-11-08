@@ -106,6 +106,9 @@ pub enum Request {
         /// Perfil de red (ajustes de FEC, *pacing* y tasa por defecto).
         #[serde(default)]
         profile: StreamProfileInfo,
+        /// Sincronizar el portapapeles de texto (F7). Desactivado por defecto.
+        #[serde(default)]
+        clipboard: bool,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -113,6 +116,9 @@ pub enum Request {
     StartReceiver {
         port: u16,
         fullscreen: bool,
+        /// Sincronizar el portapapeles de texto (F7). Desactivado por defecto.
+        #[serde(default)]
+        clipboard: bool,
     },
     /// Detiene el visor receptor en curso (si lo hay).
     StopReceiver,
@@ -405,11 +411,13 @@ mod tests {
                 }),
                 bitrate_kbps: 20_000,
                 profile: StreamProfileInfo::Wifi,
+                clipboard: true,
             },
             Request::StopStream,
             Request::StartReceiver {
                 port: 47810,
                 fullscreen: true,
+                clipboard: false,
             },
             Request::StopReceiver,
         ];

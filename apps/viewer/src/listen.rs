@@ -199,7 +199,7 @@ impl ListenApp {
             native_mode,
             dpi,
             keyframe_policy: self.args.keyframe_policy,
-            clipboard: !self.args.no_clipboard,
+            clipboard: self.args.clipboard,
         };
         self.net = Some(net::spawn(cfg, self.proxy.clone(), cmd_rx)?);
         self.net_cmd = Some(cmd_tx);

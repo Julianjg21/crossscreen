@@ -262,14 +262,25 @@ impl Agent {
                 mode_override,
                 bitrate_kbps,
                 profile,
+                clipboard,
             } => {
-                self.start_stream(&addr, &peer, mode, mode_override, bitrate_kbps, profile)
-                    .await
+                self.start_stream(
+                    &addr,
+                    &peer,
+                    mode,
+                    mode_override,
+                    bitrate_kbps,
+                    profile,
+                    clipboard,
+                )
+                .await
             }
             Request::StopStream => self.stop_stream().await,
-            Request::StartReceiver { port, fullscreen } => {
-                self.start_receiver(port, fullscreen).await
-            }
+            Request::StartReceiver {
+                port,
+                fullscreen,
+                clipboard,
+            } => self.start_receiver(port, fullscreen, clipboard).await,
             Request::StopReceiver => self.stop_receiver().await,
         }
     }
@@ -526,6 +537,7 @@ impl Agent {
         })
     }
 
+    #[allow(clippy::too_many_arguments)] // espeja uno a uno los campos de Request::StartStream
     async fn start_stream(
         self: &Arc<Self>,
         addr: &str,
@@ -534,6 +546,7 @@ impl Agent {
         mode_override: Option<ModeInfo>,
         bitrate_kbps: u32,
         profile: StreamProfileInfo,
+        clipboard: bool,
     ) -> Result<Response, IpcError> {
         if !cfg!(windows) {
             return Err(err(
@@ -658,6 +671,7 @@ impl Agent {
         };
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
+        cfg.clipboard = clipboard;
         match profile {
             StreamProfileInfo::Auto => {}
             StreamProfileInfo::Wifi => {
@@ -753,6 +767,7 @@ impl Agent {
         self: &Arc<Self>,
         port: u16,
         fullscreen: bool,
+        clipboard: bool,
     ) -> Result<Response, IpcError> {
         if !cfg!(windows) {
             return Err(err(
@@ -799,6 +814,9 @@ impl Agent {
             .kill_on_drop(true);
         if fullscreen {
             cmd.arg("--fullscreen");
+        }
+        if clipboard {
+            cmd.arg("--clipboard");
         }
         #[cfg(windows)]
         {
