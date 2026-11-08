@@ -68,6 +68,29 @@ pub enum ControlMessage {
     /// Entrada remota (F6, KVM): del receptor hacia el emisor, que la inyecta
     /// acotada al monitor transmitido.
     Input(InputEvent),
+    /// Portapapeles de texto (F7), en ambos sentidos. Ver [`ClipboardText`].
+    ClipboardText(ClipboardText),
+}
+
+/// Tamaño máximo del texto de portapapeles sincronizado: 1 MiB en UTF-8.
+pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 1_048_576;
+
+/// Contenido de texto del portapapeles enviado al par.
+///
+/// - `seq` crece en cada envío del emisor de este mensaje (cada lado lleva su
+///   propia secuencia); el receptor descarta duplicados o mensajes viejos.
+/// - `text` va en UTF-8 con saltos de línea **normalizados a `\n`**; cada
+///   plataforma los adapta al escribir en su portapapeles (CRLF en Windows).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardText {
+    pub seq: u64,
+    pub text: String,
+}
+
+impl ClipboardText {
+    pub fn validate(&self) -> bool {
+        !self.text.is_empty() && self.text.len() <= MAX_CLIPBOARD_TEXT_BYTES
+    }
 }
 
 /// Botón del ratón.
@@ -304,6 +327,50 @@ mod tests {
             let msg = ControlMessage::Input(ev);
             prop_assert_eq!(roundtrip(&msg), msg);
         }
+
+        #[test]
+        fn arbitrary_clipboard_roundtrip(seq in any::<u64>(), text in "\\PC{0,200}") {
+            let msg = ControlMessage::ClipboardText(ClipboardText { seq, text });
+            prop_assert_eq!(roundtrip(&msg), msg);
+        }
+    }
+
+    #[test]
+    fn clipboard_validation() {
+        let mk = |text: String| ClipboardText { seq: 1, text };
+        assert!(!mk(String::new()).validate());
+        assert!(mk("hola".into()).validate());
+        assert!(mk("a".repeat(MAX_CLIPBOARD_TEXT_BYTES)).validate());
+        assert!(!mk("a".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1)).validate());
+        // El límite es en bytes UTF-8, no en caracteres: 'ñ' ocupa 2 bytes.
+        assert!(!mk("ñ".repeat(MAX_CLIPBOARD_TEXT_BYTES / 2 + 1)).validate());
+    }
+
+    #[test]
+    fn clipboard_roundtrip_unicode_and_control_chars() {
+        for text in [
+            "línea 1\nlínea 2\r\nlínea 3",
+            "emoji 👍🏽 y 🇨🇴, CJK 漢字, RTL שלום",
+            "con\0NUL en medio",
+            "\t tabulado ",
+        ] {
+            let msg = ControlMessage::ClipboardText(ClipboardText {
+                seq: 42,
+                text: text.into(),
+            });
+            assert_eq!(roundtrip(&msg), msg);
+        }
+    }
+
+    #[test]
+    fn max_clipboard_text_fits_in_one_control_frame() {
+        let msg = ControlMessage::ClipboardText(ClipboardText {
+            seq: u64::MAX,
+            text: "x".repeat(MAX_CLIPBOARD_TEXT_BYTES),
+        });
+        let wire = encode(&msg).expect("1 MiB de texto debe caber en un mensaje de control");
+        assert!(wire.len() <= crate::framing::MAX_FRAME_LEN + 4);
+        assert_eq!(roundtrip(&msg), msg);
     }
 }
 

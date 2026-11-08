@@ -3,9 +3,11 @@
 
 use serde::{de::DeserializeOwned, Serialize};
 
-/// Límite duro por mensaje de control. Los mensajes legítimos son de pocos KB;
-/// el límite evita reservas de memoria arbitrarias por un par malicioso.
-pub const MAX_FRAME_LEN: usize = 256 * 1024;
+/// Límite duro por mensaje de control: evita reservas de memoria arbitrarias
+/// por un par malicioso. Casi todos los mensajes son de pocos KB; el mayor
+/// legítimo es el portapapeles (`MAX_CLIPBOARD_TEXT_BYTES`, 1 MiB), así que el
+/// límite es ese más un margen para la serialización.
+pub const MAX_FRAME_LEN: usize = crate::control::MAX_CLIPBOARD_TEXT_BYTES + 64 * 1024;
 const LEN_PREFIX: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
