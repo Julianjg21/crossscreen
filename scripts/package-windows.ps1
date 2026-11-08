@@ -20,10 +20,19 @@ if (-not $Version) {
   $Version = $line.Matches[0].Groups[1].Value
 }
 
-$bins = @("crossscreen", "crossscreen-viewer", "crossscreen-helper", "crossscreen-agent")
+$bins = @("crossscreen", "crossscreen-viewer", "crossscreen-helper", "crossscreen-agent", "crossscreen-desktop")
 if (-not $NoBuild) {
+  Push-Location (Join-Path $root "apps\desktop")
+  npm.cmd ci
+  if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm ci falló" }
+  npm.cmd run build
+  if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm run build falló" }
+  Pop-Location
+
   cargo build --release -p crossscreen-cli -p crossscreen-viewer -p crossscreen-helper -p crossscreen-agent
   if ($LASTEXITCODE -ne 0) { throw "cargo build falló" }
+  cargo build --release -p crossscreen-desktop --features custom-protocol
+  if ($LASTEXITCODE -ne 0) { throw "cargo build de crossscreen-desktop falló" }
 }
 
 $name = "crossscreen-$Version-windows-x64"

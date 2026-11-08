@@ -8,6 +8,7 @@ import {
   type LatencySummary,
   type ModeInfo,
   type PeerInfo,
+  type ReceiverSessionInfo,
   type StreamModeInfo,
   type StreamReportInfo,
   type StreamSessionInfo,
@@ -69,13 +70,17 @@ export default function Stream({
   const [devices, setDevices] = useState<Map<string, DiscoveredDevice>>(new Map());
   const [active, setActive] = useState<StreamSessionInfo | null>(status.active_stream);
   const [lastReport, setLastReport] = useState<StreamReportInfo | null>(status.last_stream);
+  const [receiver, setReceiver] = useState<ReceiverSessionInfo | null>(status.active_receiver);
   const [selectedPeer, setSelectedPeer] = useState(initialPeer ?? "");
   const [addr, setAddr] = useState(initialAddr ?? "");
   const [mode, setMode] = useState<StreamModeInfo>("extend");
   const [resOption, setResOption] = useState("native");
   const [hz, setHz] = useState(60);
   const [mbps, setMbps] = useState("20");
+  const [rxPort, setRxPort] = useState(String(DEFAULT_PORT));
+  const [rxFullscreen, setRxFullscreen] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [rxBusy, setRxBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nowSecs, setNowSecs] = useState(() => Math.floor(Date.now() / 1000));
 
@@ -88,6 +93,7 @@ export default function Stream({
       setPeers(p.peers);
       setActive(s.active_stream);
       setLastReport(s.last_stream);
+      setReceiver(s.active_receiver);
       if (!selectedPeer && p.peers.length > 0) {
         setSelectedPeer(p.peers[0].fingerprint);
       }
@@ -117,6 +123,14 @@ export default function Stream({
         setLastReport(ev.report);
         if (ev.report.error) {
           setError(ev.report.error);
+        }
+      } else if (ev.kind === "receiver_started") {
+        setReceiver(ev.receiver);
+        setError(null);
+      } else if (ev.kind === "receiver_ended") {
+        setReceiver(null);
+        if (ev.message) {
+          setError(ev.message);
         }
       } else if (ev.kind === "peers_changed") {
         void loadState();
@@ -152,10 +166,10 @@ export default function Stream({
   }, [loadState, status.mdns_available]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active && !receiver) return;
     const t = setInterval(() => setNowSecs(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(t);
-  }, [active]);
+  }, [active, receiver]);
 
   // Si el par elegido se descubre en la red local y el campo dirección está vacío,
   // rellenarlo con la IP detectada y su puerto de sesión (o 47810 por defecto).
@@ -182,8 +196,7 @@ export default function Stream({
         <div className="card empty-state">
           <p>Todavía no disponible en {status.platform}.</p>
           <p className="muted small">
-            Por ahora el emisor de pantalla solo está implementado en Windows (captura DXGI Desktop
-            Duplication y codificación H.264 por hardware con Media Foundation).
+            Por ahora la transmisión y recepción de pantalla solo están implementadas en Windows.
           </p>
         </div>
       </section>
@@ -239,14 +252,52 @@ export default function Stream({
     }
   };
 
+  const startRx = async (ev: FormEvent) => {
+    ev.preventDefault();
+    setError(null);
+    const portNum = Number(rxPort);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      setError("El puerto UDP debe ser un número entre 1 y 65535.");
+      return;
+    }
+    setRxBusy(true);
+    try {
+      const r = await call(
+        { kind: "start_receiver", port: portNum, fullscreen: rxFullscreen },
+        "receiver_started",
+      );
+      setReceiver(r.receiver);
+      setNowSecs(Math.floor(Date.now() / 1000));
+    } catch (e) {
+      setError(errorMessage(e));
+      onError(e);
+    } finally {
+      setRxBusy(false);
+    }
+  };
+
+  const stopRx = async () => {
+    setRxBusy(true);
+    setError(null);
+    try {
+      await call({ kind: "stop_receiver" }, "ok");
+    } catch (e) {
+      setError(errorMessage(e));
+      onError(e);
+    } finally {
+      setRxBusy(false);
+    }
+  };
+
   const elapsed = active ? Math.max(0, nowSecs - active.started_at) : 0;
+  const rxElapsed = receiver ? Math.max(0, nowSecs - receiver.started_at) : 0;
 
   return (
     <section aria-labelledby="h-stream">
-      <h1 id="h-stream">Transmitir pantalla</h1>
+      <h1 id="h-stream">Transmitir o recibir pantalla</h1>
       <p className="lead">
-        Envía un monitor virtual adicional (o duplica la pantalla principal) a otro equipo
-        emparejado que tenga <code>crossscreen-viewer --listen</code> en ejecución.
+        Extiende el escritorio de este PC hacia otro equipo emparejado, o convierte este equipo en
+        pantalla receptora con un clic.
       </p>
 
       {error && (
@@ -296,13 +347,12 @@ export default function Stream({
         <div className="card empty-state">
           <p>No hay equipos emparejados todavía.</p>
           <p className="muted small">
-            Empareja primero el equipo receptor en la sección «Emparejar» antes de iniciar una
-            transmisión.
+            Empareja primero los equipos en la sección «Emparejar» antes de transmitir o recibir.
           </p>
         </div>
       ) : (
         <form className="card" onSubmit={(e) => void start(e)}>
-          <h2>Nueva sesión</h2>
+          <h2>Transmitir desde este equipo (Emisor)</h2>
           <div className="grid-2">
             <div>
               <label htmlFor="stream-peer">Equipo receptor (emparejado)</label>
@@ -412,17 +462,86 @@ export default function Stream({
               {busy ? "Conectando…" : "Iniciar transmisión"}
             </button>
           </div>
-          <p className="muted small" style={{ marginTop: 10 }}>
-            En el equipo receptor debe estar ejecutándose{" "}
-            <code>crossscreen-viewer --listen 0.0.0.0:{DEFAULT_PORT} --fullscreen</code>. Al detener
-            la sesión, el monitor virtual se retira automáticamente.
-          </p>
         </form>
       )}
 
+      <div style={{ marginTop: 18 }}>
+        {receiver ? (
+          <div className="card" aria-live="polite">
+            <h2>
+              Recibiendo en este equipo <span className="badge info">Escuchando</span>
+            </h2>
+            <dl className="props">
+              <dt>Escuchando en</dt>
+              <dd>
+                <code>UDP {receiver.listen_addr}</code> (anunciado por mDNS)
+              </dd>
+              <dt>Presentación</dt>
+              <dd>{receiver.fullscreen ? "Pantalla completa" : "En ventana"}</dd>
+              <dt>Proceso del visor</dt>
+              <dd>
+                PID <code>{receiver.pid}</code> · activo desde hace {formatElapsed(rxElapsed)}
+              </dd>
+            </dl>
+            <div className="actions" style={{ marginTop: 16 }}>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => void stopRx()}
+                disabled={rxBusy}
+              >
+                {rxBusy ? "Cerrando…" : "Detener visor"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form className="card" onSubmit={(e) => void startRx(e)}>
+            <h2>Recibir en este equipo (Usar este PC como monitor)</h2>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Abre el visor de CrossScreen esperando conexiones entrantes de tus equipos emparejados
+              y anuncia el puerto automáticamente en la red local.
+            </p>
+            <div className="form-inline">
+              <div className="field">
+                <label htmlFor="rx-port">Puerto UDP</label>
+                <input
+                  id="rx-port"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={rxPort}
+                  onChange={(e) => setRxPort(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="rx-mode">Modo de ventana</label>
+                <select
+                  id="rx-mode"
+                  value={rxFullscreen ? "fullscreen" : "window"}
+                  onChange={(e) => setRxFullscreen(e.target.value === "fullscreen")}
+                >
+                  <option value="fullscreen">Pantalla completa</option>
+                  <option value="window">En ventana (1920 × 1080)</option>
+                </select>
+              </div>
+              <div className="actions">
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={rxBusy || peers.length === 0}
+                >
+                  {rxBusy ? "Abriendo visor…" : "Activar modo pantalla"}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+      </div>
+
       {lastReport && (
         <>
-          <h2>Resumen de la última sesión</h2>
+          <h2>Resumen de la última sesión emitida</h2>
           <div className="card">
             {lastReport.error && (
               <p className="alert error" role="alert">

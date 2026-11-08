@@ -106,6 +106,13 @@ pub enum Request {
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
+    /// Inicia el visor receptor (`crossscreen-viewer --listen`) en este equipo.
+    StartReceiver {
+        port: u16,
+        fullscreen: bool,
+    },
+    /// Detiene el visor receptor en curso (si lo hay).
+    StopReceiver,
 }
 
 /// Respuestas del agente.
@@ -123,6 +130,7 @@ pub enum Response {
     DisplayShown { gdi_name: String, mode: ModeInfo },
     DisplaysHidden { count: u32 },
     StreamStarted { session: StreamSessionInfo },
+    ReceiverStarted { receiver: ReceiverSessionInfo },
 }
 
 /// Eventos que el agente difunde a los clientes.
@@ -136,6 +144,8 @@ pub enum Event {
     DeviceLost { fullname: String },
     StreamStarted { session: StreamSessionInfo },
     StreamEnded { report: Box<StreamReportInfo> },
+    ReceiverStarted { receiver: ReceiverSessionInfo },
+    ReceiverEnded { message: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +172,7 @@ pub struct AgentStatus {
     pub streaming_supported: bool,
     pub active_stream: Option<StreamSessionInfo>,
     pub last_stream: Option<Box<StreamReportInfo>>,
+    pub active_receiver: Option<ReceiverSessionInfo>,
     pub data_dir: String,
     pub log_file: Option<String>,
 }
@@ -277,6 +288,15 @@ pub struct StreamReportInfo {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiverSessionInfo {
+    pub listen_addr: String,
+    pub port: u16,
+    pub fullscreen: bool,
+    pub pid: u32,
+    pub started_at: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -363,6 +383,11 @@ mod tests {
                 bitrate_kbps: 20_000,
             },
             Request::StopStream,
+            Request::StartReceiver {
+                port: 47810,
+                fullscreen: true,
+            },
+            Request::StopReceiver,
         ];
         for (i, r) in reqs.into_iter().enumerate() {
             roundtrip(&ClientMessage::Request {
@@ -546,6 +571,7 @@ mod tests {
             streaming_supported: true,
             active_stream: None,
             last_stream: None,
+            active_receiver: None,
             data_dir: "d".into(),
             log_file: None,
         }))

@@ -19,6 +19,7 @@ export interface AgentStatus {
   streaming_supported: boolean;
   active_stream: StreamSessionInfo | null;
   last_stream: StreamReportInfo | null;
+  active_receiver: ReceiverSessionInfo | null;
   data_dir: string;
   log_file: string | null;
 }
@@ -114,6 +115,14 @@ export interface StreamReportInfo {
   error: string | null;
 }
 
+export interface ReceiverSessionInfo {
+  listen_addr: string;
+  port: number;
+  fullscreen: boolean;
+  pid: number;
+  started_at: number;
+}
+
 export type Request =
   | { kind: "get_status" }
   | { kind: "get_identity" }
@@ -134,7 +143,9 @@ export type Request =
       mode_override: ModeInfo | null;
       bitrate_kbps: number;
     }
-  | { kind: "stop_stream" };
+  | { kind: "stop_stream" }
+  | { kind: "start_receiver"; port: number; fullscreen: boolean }
+  | { kind: "stop_receiver" };
 
 export type Response =
   | ({ kind: "status" } & AgentStatus)
@@ -147,7 +158,8 @@ export type Response =
   | { kind: "displays"; displays: DisplayInfo[] }
   | { kind: "display_shown"; gdi_name: string; mode: ModeInfo }
   | { kind: "displays_hidden"; count: number }
-  | { kind: "stream_started"; session: StreamSessionInfo };
+  | { kind: "stream_started"; session: StreamSessionInfo }
+  | { kind: "receiver_started"; receiver: ReceiverSessionInfo };
 
 export type PairingOutcome =
   | { outcome: "paired"; peer: PeerInfo }
@@ -162,7 +174,9 @@ export type AgentEvent =
   | ({ kind: "device_discovered" } & DiscoveredDevice)
   | { kind: "device_lost"; fullname: string }
   | { kind: "stream_started"; session: StreamSessionInfo }
-  | { kind: "stream_ended"; report: StreamReportInfo };
+  | { kind: "stream_ended"; report: StreamReportInfo }
+  | { kind: "receiver_started"; receiver: ReceiverSessionInfo }
+  | { kind: "receiver_ended"; message: string | null };
 
 export interface CmdError {
   kind: "agent_unavailable" | "agent_error" | "protocol";

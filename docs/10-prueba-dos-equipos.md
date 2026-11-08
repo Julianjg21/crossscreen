@@ -4,8 +4,8 @@ Esta es una versión **alfa de prueba**. El objetivo es validar la cadena comple
 
 | Equipo | Papel | Necesita |
 |---|---|---|
-| **PC-A (fuente)** | Su escritorio se **extiende** con un monitor virtual | Driver de monitor virtual instalado (ver más abajo) + `crossscreen.exe` |
-| **PC-B (receptor)** | Hace de **pantalla** | Solo `crossscreen.exe` y `crossscreen-viewer.exe`. Sin driver ni permisos de administrador |
+| **PC-A (fuente)** | Su escritorio se **extiende** con un monitor virtual | Driver de monitor virtual instalado (ver más abajo) + `crossscreen-desktop.exe` (o `crossscreen.exe` por CLI) |
+| **PC-B (receptor)** | Hace de **pantalla** | `crossscreen-desktop.exe`, `crossscreen-agent.exe` y `crossscreen-viewer.exe` (sin driver ni permisos de administrador) |
 
 **Requisitos de ambos equipos:**
 - Windows 10 21H2+ u 11, x64.
@@ -15,7 +15,7 @@ Esta es una versión **alfa de prueba**. El objetivo es validar la cadena comple
 ## 0. Descargar
 1. En los dos equipos, descarga `crossscreen-<versión>-windows-x64.zip` desde la sección **Releases** del repositorio.
 2. Descomprímelo, por ejemplo en `C:\CrossScreen`.
-3. Abre **PowerShell** en esa carpeta.
+3. Puedes usar la **aplicación gráfica (`crossscreen-desktop.exe` con doble clic)** en ambos equipos o **PowerShell** en esa carpeta.
 
 > Los ejecutables no están firmados todavía, así que Windows SmartScreen puede avisar. Para comprobar que la descarga está íntegra, compara los hashes con `SHA256SUMS.txt`:
 > `Get-FileHash .\crossscreen.exe`
@@ -51,6 +51,12 @@ En PC-B: `ipconfig`. Anota la **dirección IPv4** del adaptador que estés usand
 3. Los dos muestran "Emparejado con …" y la huella corta del otro. **Comprueba que las huellas coinciden** con lo que muestra `.\crossscreen.exe id` en cada equipo.
 
 ## 4. Transmitir
+
+### Opción A: Desde el panel gráfico (`crossscreen-desktop.exe`, sin consola)
+1. **En PC-B (receptor):** abre `crossscreen-desktop.exe` con doble clic, ve a **«Transmitir pantalla»** y pulsa **«Activar modo pantalla»** (en «Recibir en este equipo»).
+2. **En PC-A (fuente):** abre `crossscreen-desktop.exe` con doble clic, ve a **«Red local»** o **«Transmitir pantalla»** (la IP y el puerto se autocompletan por mDNS) y pulsa **«Iniciar transmisión»**.
+
+### Opción B: Por línea de comandos (PowerShell)
 1. **PC-B (receptor):**
    ```powershell
    .\crossscreen-viewer.exe --listen 0.0.0.0:47810 --fullscreen

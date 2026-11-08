@@ -6,8 +6,9 @@ use cs_core::Roles;
 use cs_discovery::{Announcement, DiscoveredPeer, Discovery, DiscoveryEvent};
 use cs_ipc::{
     AgentStatus, DiscoveredDevice, DisplayInfo, ErrorCode, Event, Handler, HandlerFuture,
-    IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo, Request, Response,
-    StreamModeInfo, StreamReportInfo, StreamSessionInfo, IPC_VERSION,
+    IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo,
+    ReceiverSessionInfo, Request, Response, StreamModeInfo, StreamReportInfo, StreamSessionInfo,
+    IPC_VERSION,
 };
 use cs_protocol::{ALPN, ALPN_PAIRING, PROTOCOL_VERSION};
 use cs_security::identity::Identity;
@@ -48,6 +49,11 @@ struct StreamState {
     last: Option<Box<StreamReportInfo>>,
 }
 
+struct ActiveReceiver {
+    info: ReceiverSessionInfo,
+    stop: Option<oneshot::Sender<()>>,
+}
+
 #[derive(Default)]
 struct DiscoveryState {
     active: bool,
@@ -67,6 +73,7 @@ pub struct Agent {
     mdns: Option<Mutex<Discovery>>,
     pairing: tokio::sync::Mutex<Option<PairingListener>>,
     stream: tokio::sync::Mutex<StreamState>,
+    receiver: tokio::sync::Mutex<Option<ActiveReceiver>>,
     discovery: Mutex<DiscoveryState>,
 }
 
@@ -117,9 +124,10 @@ impl Agent {
             mdns,
             pairing: tokio::sync::Mutex::new(None),
             stream: tokio::sync::Mutex::new(StreamState::default()),
+            receiver: tokio::sync::Mutex::new(None),
             discovery: Mutex::new(DiscoveryState::default()),
         });
-        agent.announce(None);
+        agent.announce(0, None);
         Ok(agent)
     }
 
@@ -132,6 +140,15 @@ impl Agent {
             if let Ok(mut d) = m.lock() {
                 let _ = d.withdraw();
             }
+        }
+        if let Some(stop) = self
+            .receiver
+            .lock()
+            .await
+            .as_mut()
+            .and_then(|r| r.stop.take())
+        {
+            let _ = stop.send(());
         }
         let stop = {
             let st = self.stream.lock().await;
@@ -153,16 +170,16 @@ impl Agent {
         let _ = self.events.send(e);
     }
 
-    /// Anuncia este equipo por mDNS. Aún no hay sesiones de vídeo, así que
-    /// `session_port` es 0; mientras se muestra un PIN se anuncia su puerto.
-    fn announce(&self, pairing_port: Option<u16>) {
+    /// Anuncia este equipo por mDNS con su puerto de sesión (si el visor está
+    /// activo) y de emparejamiento (si se muestra un PIN).
+    fn announce(&self, session_port: u16, pairing_port: Option<u16>) {
         let Some(m) = &self.mdns else { return };
         let a = Announcement {
             device_id: self.identity.fingerprint().device_id(),
             name: self.name.clone(),
             roles: Roles::BOTH,
             protocol_major: PROTOCOL_VERSION.major,
-            session_port: 0,
+            session_port,
             pairing_port,
         };
         match m.lock() {
@@ -173,6 +190,18 @@ impl Agent {
             }
             Err(_) => tracing::error!("estado mDNS envenenado"),
         }
+    }
+
+    async fn refresh_announcement(&self) {
+        let pairing_port = self.pairing.lock().await.as_ref().map(|p| p.port);
+        let session_port = self
+            .receiver
+            .lock()
+            .await
+            .as_ref()
+            .map(|r| r.info.port)
+            .unwrap_or(0);
+        self.announce(session_port, pairing_port);
     }
 
     fn trust(&self) -> Result<TrustStore, IpcError> {
@@ -237,6 +266,10 @@ impl Agent {
                     .await
             }
             Request::StopStream => self.stop_stream().await,
+            Request::StartReceiver { port, fullscreen } => {
+                self.start_receiver(port, fullscreen).await
+            }
+            Request::StopReceiver => self.stop_receiver().await,
         }
     }
 
@@ -250,6 +283,7 @@ impl Agent {
                 st.last.clone(),
             )
         };
+        let active_receiver = self.receiver.lock().await.as_ref().map(|r| r.info.clone());
         AgentStatus {
             agent_version: env!("CARGO_PKG_VERSION").into(),
             ipc_version: IPC_VERSION,
@@ -261,6 +295,7 @@ impl Agent {
             streaming_supported: cfg!(windows),
             active_stream,
             last_stream,
+            active_receiver,
             data_dir: self.dir.display().to_string(),
             log_file: self.log_file.as_ref().map(|p| p.display().to_string()),
         }
@@ -314,7 +349,7 @@ impl Agent {
             cancel: Some(cancel_tx),
         });
         drop(slot);
-        self.announce(Some(port));
+        self.refresh_announcement().await;
         tracing::info!(port, "emparejamiento: esperando (PIN visible en la UI)");
         self.emit(Event::PairingPin {
             pin: pin.as_str().to_owned(),
@@ -352,7 +387,7 @@ impl Agent {
             };
             endpoint.close();
             *agent.pairing.lock().await = None;
-            agent.announce(None);
+            agent.refresh_announcement().await;
             if matches!(outcome, PairingOutcome::Paired { .. }) {
                 agent.emit(Event::PeersChanged);
             }
@@ -686,6 +721,155 @@ impl Agent {
         let _ = stop.send(true);
         Ok(Response::Ok)
     }
+
+    async fn start_receiver(
+        self: &Arc<Self>,
+        port: u16,
+        fullscreen: bool,
+    ) -> Result<Response, IpcError> {
+        if !cfg!(windows) {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "El visor receptor solo está disponible en Windows por ahora",
+            ));
+        }
+        if port == 0 {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "El puerto UDP debe ser mayor que 0 (p. ej. 47810)",
+            ));
+        }
+        {
+            let trust = self.trust()?;
+            if trust.fingerprints().is_empty() {
+                return Err(err(
+                    ErrorCode::BadRequest,
+                    "No hay equipos emparejados. Empareja primero el equipo emisor en la sección «Emparejar».",
+                ));
+            }
+        }
+        let mut slot = self.receiver.lock().await;
+        if let Some(r) = slot.as_ref() {
+            return Ok(Response::ReceiverStarted {
+                receiver: r.info.clone(),
+            });
+        }
+        let viewer_path = find_viewer().ok_or_else(|| {
+            err(
+                ErrorCode::NotFound,
+                "No se encontró crossscreen-viewer junto al agente. Compílalo o descárgalo en la misma carpeta.",
+            )
+        })?;
+        let listen_addr = format!("0.0.0.0:{port}");
+        let mut cmd = tokio::process::Command::new(&viewer_path);
+        cmd.arg("--listen")
+            .arg(&listen_addr)
+            .arg("--data-dir")
+            .arg(&self.dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        if fullscreen {
+            cmd.arg("--fullscreen");
+        }
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| failed(format!("No se pudo lanzar {}: {e}", viewer_path.display())))?;
+        let pid = child.id().unwrap_or(0);
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let info = ReceiverSessionInfo {
+            listen_addr,
+            port,
+            fullscreen,
+            pid,
+            started_at,
+        };
+        let (stop_tx, stop_rx) = oneshot::channel();
+        *slot = Some(ActiveReceiver {
+            info: info.clone(),
+            stop: Some(stop_tx),
+        });
+        drop(slot);
+        self.refresh_announcement().await;
+        tracing::info!(port, fullscreen, pid, "visor receptor iniciado");
+        self.emit(Event::ReceiverStarted {
+            receiver: info.clone(),
+        });
+
+        let agent = self.clone();
+        tokio::spawn(async move {
+            let mut stderr = child.stderr.take();
+            let msg = tokio::select! {
+                status = child.wait() => {
+                    match status {
+                        Ok(s) if s.success() => None,
+                        Ok(s) => {
+                            let mut err_txt = String::new();
+                            if let Some(mut r) = stderr.take() {
+                                use tokio::io::AsyncReadExt;
+                                let _ = r.read_to_string(&mut err_txt).await;
+                            }
+                            let trimmed = err_txt.trim();
+                            if trimmed.is_empty() {
+                                Some(format!("El visor terminó ({s})"))
+                            } else {
+                                Some(trimmed.lines().last().unwrap_or(trimmed).to_owned())
+                            }
+                        }
+                        Err(e) => Some(format!("Error esperando al visor: {e}")),
+                    }
+                }
+                _ = stop_rx => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    None
+                }
+            };
+            *agent.receiver.lock().await = None;
+            agent.refresh_announcement().await;
+            tracing::info!(?msg, "visor receptor detenido");
+            agent.emit(Event::ReceiverEnded { message: msg });
+        });
+        Ok(Response::ReceiverStarted { receiver: info })
+    }
+
+    async fn stop_receiver(&self) -> Result<Response, IpcError> {
+        let stop = self
+            .receiver
+            .lock()
+            .await
+            .as_mut()
+            .and_then(|r| r.stop.take());
+        let Some(stop) = stop else {
+            return Err(err(
+                ErrorCode::NotFound,
+                "El visor receptor no está en ejecución",
+            ));
+        };
+        let _ = stop.send(());
+        Ok(Response::Ok)
+    }
+}
+
+fn find_viewer() -> Option<PathBuf> {
+    let exe_name = format!("crossscreen-viewer{}", std::env::consts::EXE_SUFFIX);
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let mut candidates = vec![dir.join(&exe_name)];
+    if let Some(parent) = dir.parent() {
+        for profile in ["debug", "release"] {
+            candidates.push(parent.join(profile).join(&exe_name));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 fn build_stream_report(

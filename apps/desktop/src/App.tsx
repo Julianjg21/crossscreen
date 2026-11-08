@@ -42,6 +42,7 @@ export default function App() {
     addr?: string;
   } | null>(null);
   const [streamingLive, setStreamingLive] = useState(false);
+  const [receivingLive, setReceivingLive] = useState(false);
 
   const connect = useCallback(async (start = false) => {
     setConn({ state: "connecting" });
@@ -49,6 +50,7 @@ export default function App() {
       const info = start ? await agent.start() : await agent.connect();
       const status = await call({ kind: "get_status" }, "status");
       setStreamingLive(status.active_stream !== null);
+      setReceivingLive(status.active_receiver !== null);
       setConn({ state: "connected", info, status });
     } catch (e) {
       setConn({ state: "unavailable", message: errorMessage(e) });
@@ -65,6 +67,10 @@ export default function App() {
         setStreamingLive(true);
       } else if (ev.kind === "stream_ended") {
         setStreamingLive(false);
+      } else if (ev.kind === "receiver_started") {
+        setReceivingLive(true);
+      } else if (ev.kind === "receiver_ended") {
+        setReceivingLive(false);
       }
     });
     return () => {
@@ -116,6 +122,9 @@ export default function App() {
                 >
                   <span>{n.label}</span>
                   {n.id === "stream" && streamingLive && <span className="badge ok">En vivo</span>}
+                  {n.id === "stream" && !streamingLive && receivingLive && (
+                    <span className="badge info">Escuchando</span>
+                  )}
                 </button>
               </li>
             ))}
