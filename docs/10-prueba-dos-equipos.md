@@ -77,12 +77,16 @@ En PC-B: `ipconfig`. Anota la **dirección IPv4** del adaptador que estés usand
 ### Durante la transmisión: qué probar
 - **Monitor extendido:** arrastra ventanas al monitor nuevo de PC-A y comprueba que se ven en PC-B.
 - **Ratón y teclado desde PC-B (F6):** con la ventana del visor enfocada en PC-B, el ratón y el teclado de PC-B controlan el monitor virtual de PC-A. Para desactivarlo: `--no-remote-input` en el visor (PC-B) o en `stream` (PC-A).
-- **Portapapeles (F7), en ambos sentidos:**
+- **Portapapeles (F7), en ambos sentidos.** Está **desactivado por defecto** (el portapapeles puede contener contraseñas). Hay que activarlo **en los dos equipos**:
+  - en el panel, con la casilla "Sincronizar el portapapeles de texto" al transmitir y al recibir;
+  - por línea de comandos, añadiendo `--clipboard` al visor (PC-B) y a `stream` (PC-A).
+
+  Después:
   1. Copia un texto en PC-A (Ctrl+C) y pégalo en PC-B (Ctrl+V). Debería llegar en menos de 1 s.
   2. Copia otro texto en PC-B y pégalo en PC-A.
   3. Prueba saltos de línea, tildes y emojis (👍🏽).
 
-  Solo se sincroniza **texto**, de hasta 1 MiB, y solo lo que copies **después** de conectar: lo que ya estaba copiado no se envía. Para desactivarlo: `--no-clipboard` en el visor o en `stream`.
+  Solo se sincroniza **texto**, de hasta 1 MiB, y solo lo que copies **después** de conectar: lo que ya estaba copiado no se envía.
 
 ## 5. Qué anotar y enviarme
 Al terminar, **cada lado imprime un resumen**. Cópialo de los dos equipos, indicando:

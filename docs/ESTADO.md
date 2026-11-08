@@ -65,12 +65,12 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
 ## Trabajo en curso (2026-11-08)
 Ninguno pendiente en el árbol de trabajo.
 
-**F7 (portapapeles) integrado** en emisor (`cs-pipeline`) y receptor (`crossscreen-viewer`) mediante `cs_clipboard::ClipboardBridge`: un hilo propio que sondea cada 250 ms y aplica textos remotos sin eco. Activado por defecto; `--no-clipboard` en `stream` o en el visor lo desactiva. Solo se sincronizan los cambios posteriores al inicio de la sesión. **Falta probarlo entre los dos equipos** (en un solo PC ambos lados comparten portapapeles).
+**F7 (portapapeles) integrado** en emisor (`cs-pipeline`) y receptor (`crossscreen-viewer`) mediante `cs_clipboard::ClipboardBridge`: un hilo propio que sondea cada 250 ms y aplica textos remotos sin eco. **Desactivado por defecto** (puede contener contraseñas): se activa con `--clipboard` en `stream` y en el visor, o con la casilla del panel, en los dos equipos. Solo se sincronizan los cambios posteriores al inicio de la sesión. **Falta probarlo entre los dos equipos** (en un solo PC ambos lados comparten portapapeles).
 
 **La escritura en el portapapeles real no se ha probado:** el portapapeles del dueño tenía contenido con formato y las pruebas se omiten solas para no destruirlo. Prueba pendiente (con texto plano copiado): `cargo test -p cs-clipboard --test windows_clipboard -- --ignored --test-threads=1`.
 
 ## Próximos pasos (en orden)
-1. Publicada `v0.0.1-alpha.6`: **probar entre los dos equipos el portapapeles (F7)**, la entrada remota (F6) y los perfiles de red desde el panel.
+1. Publicada `v0.0.1-alpha.7` (usar esta, no la `alpha.6`, que traía el portapapeles activado por defecto): **probar entre los dos equipos el portapapeles (F7)**, la entrada remota (F6) y los perfiles de red desde el panel.
 2. Probar la transmisión iniciada desde el panel Tauri (`crossscreen-desktop` + `crossscreen-agent`) entre los dos equipos, incluidos los **perfiles de red** (Auto, Wi-Fi, LAN, Ahorro) y la entrada remota (F6).
 3. Probar **por cable** para separar la latencia de red del Wi-Fi de la del pipeline.
 4. Desactivar el ahorro de energía del Wi-Fi en los dos equipos para reducir los picos ocasionales de RTT (120–236 ms).
@@ -108,3 +108,4 @@ Ninguno pendiente en el árbol de trabajo.
 | 2026-11-08 | Coordinador | **F6 y F7, piezas base:** `InputEvent` en el protocolo y crate `cs-input` (inyección verificada píxel a píxel en Windows real, también en modo DPI-aware); `ControlMessage::ClipboardText` (límite de mensaje de control subido a 1 MiB + 64 KiB) y crate `cs-clipboard` (`ClipboardSync` sin eco, backend Win32 con ventana propietaria). |
 | 2026-11-08 | Coordinador | Retomado el trabajo de otro agente que se quedó sin cuota: **perfiles de red** en `cs-ipc`/agente/panel (faltaba un import que rompía `crossscreen-agent`) y arreglo de un *cast* en `cs-pipeline` que tenía el **CI de `main` en rojo** desde `6f34136`. 202 tests en verde. |
 | 2026-11-08 | Coordinador | **F7 integrado:** `ClipboardBridge` en `cs-clipboard` (hilo Win32 + canales, `prime` para no enviar lo copiado antes de conectar), mensajes `ClipboardText` en el bucle del emisor y del receptor, opciones `--no-clipboard` y contadores en los resúmenes. Arreglo de *binary planting* en el panel (el agente solo se busca junto al ejecutable en release). 204 tests en verde. |
+| 2026-11-08 | Coordinador | Revisión de seguridad de F7: portapapeles **opcional** (desactivado por defecto; `--clipboard` y casilla en el panel, llevado por `cs-ipc` hasta el visor); ranura "el último gana" en lugar de cola sin límite para textos remotos; `prime_unread` evita enviar lo copiado antes de conectar si la primera lectura falló. Release `v0.0.1-alpha.7`. 209 tests en verde. |
