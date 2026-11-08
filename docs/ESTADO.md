@@ -5,17 +5,17 @@
 > - Al terminar tu sesión, actualiza "Trabajo en curso", "Próximos pasos" y añade una línea a la **Bitácora**: fecha, quién, qué se hizo y qué quedó a medias.
 > - Las reglas permanentes están en [`AGENTS.md`](../AGENTS.md).
 
-**Última actualización:** 2026-11-08, sesión principal (coordinador).
+**Última actualización:** 2026-11-08, integración de resiliencia en Wi-Fi (`v0.0.1-alpha.2`).
 
 ## Resumen en una frase
-La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **incluida una prueba real entre dos PCs por Wi-Fi**. El problema actual es la **resiliencia ante pérdidas en Wi-Fi**: hay congelaciones y saltos.
+La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **con resiliencia ante pérdidas en ráfaga (FEC adaptativo + entrelazado de bloques + paridad del 50 % en IDR + decodificación a través de pérdidas + política calmada de `RequestKeyframe`) integrada, medida y publicada en `v0.0.1-alpha.2`**.
 
 ## Fases (ver `docs/07-roadmap.md`)
 | Fase | Estado |
 |---|---|
 | F0 Fundamentos | ✅ En lo esencial (CI y release funcionando en GitHub) |
 | F1 PoC (Windows) | ✅ PoC-1, 2, 3 y 5; PoC-4 en loopback + primera prueba real |
-| F2 MVP Windows → Windows | 🟡 Funciona; falta resiliencia en Wi-Fi, prueba por cable, estabilidad de 2 h e integración en agente/panel |
+| F2 MVP Windows → Windows | 🟡 Funciona; resiliencia ante ráfagas integrada (`v0.0.1-alpha.2`), falta repetir la prueba real en Wi-Fi y por cable, estabilidad de 2 h e integración en agente/panel |
 | F3 Extender en Windows | 🟡 Adelantada (VDD + CCD funcionando) |
 | F4 Linux | ⏳ No iniciada (no hay equipo Linux para probar) |
 
@@ -48,35 +48,18 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
   - Recuperación de 0,4 a **6,4 s**; 213 frames descartados esperando IDR.
   - RTT inicial 943 ms y *jitter* 38 ms (probable ahorro de energía del Wi-Fi).
   - **Diagnóstico:** círculo vicioso. Una pérdida congela hasta el siguiente IDR; los IDR (~80 KB) también se pierden en ráfagas; las peticiones repetidas saturan el Wi-Fi.
+- **Resiliencia ante pérdidas en ráfaga (`v0.0.1-alpha.2`, 15 s / 900 frames a 60 fps bajo Gilbert-Elliott `p=0,015, r=0,25, h=0,8`, ~4,75 % de pérdida en ~500 ráfagas):**
+  - Frames perdidos post-FEC: de **133–144** (15–16 %) a **14** (**1,6 %, -90 %**).
+  - Shards recuperados por FEC: de **424–472** a **1 082** (`AdaptiveFec` sube de `0,15 → 0,23 → 0,34 → 0,50` en 3 ajustes).
+  - Peticiones `RequestKeyframe`: de **94–144** a **12** (**-87 % a -92 %**, exactamente 1,00 por episodio, recuperadas en **18,1 ms p50 / 22,1 ms máx.**).
+  - Congelaciones (> 200 ms): de **3 congelaciones (867 ms total, máx. 367 ms)** y 217 frames descartados a **0 congelaciones (0 ms)** y **853 frames presentados (56,8 fps)** frente a 545 (36,3 fps).
+- **Verificación de `CODECAPI_AVEncVideoGradualIntraRefresh` en el MFT de Intel:** acepta `1` y `0x00010001` en `SetValue`/`GetValue`, pero las 120/120 unidades de acceso generadas son **100 % idénticas byte a byte** a `None (0)` (no-op total en el wrapper MFT de Intel).
 
 ## Trabajo en curso (2026-11-08)
-Dos agentes en paralelo **sin hacer commit**: sus cambios quedan en el árbol de trabajo hasta que el coordinador los verifique y los suba.
-
-1. **Receptor** (`apps/viewer`, `crates/cs-decode`, `crates/cs-render`):
-   - decodificar a través de la pérdida en vez de congelar (`--freeze-on-loss` mantiene el modo antiguo);
-   - política calmada de peticiones de IDR: una petición y esperar `max(3·RTT, 250 ms)` o hasta que llegue un IDR, con *backoff*;
-   - quitar el doble aviso de `SeqTracker` (cs-transport ya emite `Lost` por huecos);
-   - simulador de pérdidas en ráfaga (Gilbert-Elliott) en `apps/viewer/examples/file_source.rs`.
-
-   Documenta en `docs/poc-results/mvp-f2-receptor.md`.
-2. **Emisor y transporte** (`crates/cs-transport`, `crates/cs-pipeline`, `apps/cli`, `crates/cs-encode`):
-   - FEC separado para IDR (~0,5);
-   - intercalado de shards entre bloques FEC;
-   - FEC adaptativo según `ReceiverStats`;
-   - ignorar peticiones de IDR dentro de ~1 RTT del último;
-   - probar el *intra refresh* del MFT de Intel y verificarlo en el stream;
-   - opción de prueba `--sim-loss gilbert:…` en `crossscreen stream`.
-
-   Documenta en `docs/poc-results/mvp-f2-emisor.md`.
-
-**Si esta sesión se corta antes de integrarlo:**
-1. Revisa `git status` / `git diff` para ver lo que dejaron.
-2. Lee las secciones nuevas de esos dos documentos.
-3. Pasa la verificación completa (ver `AGENTS.md`, punto 5).
-4. Haz commit por tema y publica `v0.0.1-alpha.2`.
+Ninguno pendiente en el árbol de trabajo: las mejoras de resiliencia del receptor y del emisor quedaron integradas, probadas y etiquetadas en **`v0.0.1-alpha.2`**.
 
 ## Próximos pasos (en orden)
-1. Integrar y verificar el trabajo en curso; publicar **`v0.0.1-alpha.2`**; repetir la prueba real A → B por Wi-Fi.
+1. Descargar el `.zip` de **`v0.0.1-alpha.2`** en `PC-B` (`DESKTOP-93VFE2P`) y repetir la prueba real A → B por Wi-Fi para confirmar la mejora sobre el enlace real.
 2. Probar **por cable** para separar los problemas del Wi-Fi de los del programa.
 3. Pedir al dueño que desactive el ahorro de energía del Wi-Fi en los dos equipos y volver a medir.
 4. Integrar el streaming en `crossscreen-agent` y en el panel Tauri (botón "Transmitir pantalla"; hoy está como "Próximamente").
@@ -91,9 +74,9 @@ Dos agentes en paralelo **sin hacer commit**: sus cambios quedan en el árbol de
 - **VDD:** no usar su tubería. Modos y cantidad de monitores se cambian con el helper (XML + `pnputil /restart-device`, admin); mostrar y retirar con CCD (sin admin). Windows pone cada monitor nuevo en *duplicar*.
 - **Codificador MF de Intel:**
   - necesita `timeBeginPeriod(1)` y excluir el proceso de la limitación de energía;
-  - ignora el cambio de bitrate en caliente;
+  - ignora el cambio de bitrate en caliente y también `CODECAPI_AVEncVideoGradualIntraRefresh` (ambos devuelven `S_OK` pero no alteran el flujo H.264);
   - CBR rellena cada frame (~40 KB a 20 Mbps).
-- **Visor:** D3D11 directo en Windows (no wgpu), sin copias.
+- **Visor:** D3D11 directo en Windows (no wgpu), sin copias; por defecto decodifica a través de pérdidas (`DecodeThrough`) y usa `KeyframeRequester` calmado (`Calm`).
 - **Captura:** una sola duplicación por monitor y por proceso; el nombre GDI (`\\.\DISPLAYn`) cambia, así que hay que buscarlo siempre con `cs-display`.
 - **El IPC de Linux y todo lo de Linux** compila (solo los crates portables), pero nunca se ha ejecutado en un Linux real.
 - **Clave privada:** DPAPI en Windows; en Linux un archivo 0600 (Secret Service pendiente).
@@ -108,3 +91,4 @@ Dos agentes en paralelo **sin hacer commit**: sus cambios quedan en el árbol de
 | 2026-11-08 | 2 agentes + coordinador | MVP F2: `crossscreen stream` + `crossscreen-viewer --listen`; arreglo de frames perdidos por completo en el reensamblador; mismo equipo p50 29 ms. |
 | 2026-11-08 | Coordinador | Repo en GitHub, CI en verde, release `v0.0.1-alpha.1`; revocación de pares en caliente en el visor. |
 | 2026-11-08 | Dueño + coordinador | **Primera prueba real A → B por Wi-Fi:** funciona, pero con lag y congelaciones por pérdidas en ráfaga. Lanzados 2 agentes de resiliencia (ver "Trabajo en curso"). |
+| 2026-11-08 | Agente integrador | Integración de resiliencia Wi-Fi en receptor (`DecodeThrough`, `KeyframeRequester` calmado, `SeqTracker::note_lost`) y emisor/transporte (FEC IDR 0,5, entrelazado de bloques, `AdaptiveFec`, filtro `<1 RTT`, inyector Gilbert-Elliott y sonda `GradualIntraRefresh`); mediciones documentadas y release `v0.0.1-alpha.2`. |

@@ -151,7 +151,70 @@ Dos `--data-dir` en el scratchpad, emparejados con `pair-listen` / `pair` por lo
 8. **Prioridad:** MMCSS "Games" se obtuvo sin privilegios en todas las ejecuciones (el *log* `info` muestra `MmcssGames`).
 
 ## Cambios en otros crates
-Ninguno. No se encontraron fallos en `cs-capture` ni en `cs-encode` que hubiera que corregir.
+- En la primera entrega no hizo falta tocar `cs-capture` ni `cs-encode`.
+- En la iteración de resiliencia en Wi-Fi se ampliaron `cs-transport` (`fec`, `simloss`, `Packetizer` con paridad separada para IDR y entrelazado de bloques), `cs-encode` (`EncoderConfig::intra_refresh`, `h264::parse_sei_messages` y sonda `--intra-refresh` en `encode_bench`) y `cs-pipeline` / `apps/cli`.
+
+## Iteración de resiliencia en Wi-Fi y verificación de *gradual intra refresh*
+
+### Motivación (primera prueba Wi-Fi entre 2 equipos)
+
+En la sesión de 60 s por Wi-Fi (`v0.0.1-alpha.1`, `1366×768@60`), el emisor recibió **104 `RequestKeyframe`** y forzó **90 IDR** (media **79,5 KiB**, ~68 datagramas en 2 bloques FEC, frente a **36,7 KiB** por P-frame). Con FEC fijo de **0,10** y envío secuencial bloque a bloque:
+- Un bloque de 48 shards de datos solo llevaba **5 shards de paridad**: cualquier ráfaga Wi-Fi de ≥ 6 datagramas consecutivos rompía el bloque y hacía perder el frame entero.
+- Como los IDR ocupaban más del doble de datagramas que un P-frame pero tenían el mismo 10 % de paridad, eran los más vulnerables a las ráfagas Wi-Fi, realimentando la tormenta de `RequestKeyframe`.
+- Además, cuando el RTT subía (943 ms iniciales en esa sesión), llegaban varios `RequestKeyframe` disparados antes de que el receptor pudiera ver el IDR que ya estaba en vuelo.
+
+### Mejoras implementadas en `cs-transport`, `cs-pipeline` y `apps/cli`
+
+1. **Paridad FEC separada para IDR (`Packetizer::with_keyframe_fec_ratio`, `--keyframe-fec`, por defecto `0.5`):**
+   - Los frames marcados como `keyframe` usan `max(keyframe_fec_ratio, fec_ratio)` (50 % por defecto: un IDR de 65 shards repartido en dos bloques de 33 + 32 lleva **17 + 16 = 33 shards de paridad** en vez de 4 + 4 = 8).
+2. **Entrelazado de shards entre bloques FEC (`Packetizer::with_interleave`, activo por defecto; `--no-fec-interleave` para desactivar):**
+   - Cuando un frame se divide en $B > 1$ bloques FEC (cualquier frame > 48 shards, ~55 KiB), los datagramas se emiten intercalando bloques (`(0,0), (1,0), …, (0,1), (1,1), …`) en lugar de enviar todo el bloque 0 y luego el bloque 1.
+   - Así, una ráfaga de $L$ datagramas consecutivos perdidos reparte el daño en $\approx L / B$ shards por bloque, duplicando o triplicando la longitud de ráfaga que el código Reed-Solomon absorbe sin subir el bitrate (verificado con test determinista en `cs-transport::reassembly`: ráfaga de 15 datagramas sobre un frame de 3 bloques con 6 shards de paridad por bloque se pierde al 100 % sin entrelazar y se recupera al 100 % entrelazado).
+3. **FEC adaptativo para P-frames (`cs_transport::fec::AdaptiveFec`, activo por defecto; `--no-adaptive-fec` para fijarlo):**
+   - Parte de `--fec` (**`0.15`** por defecto, antes `0.10`) y ajusta la paridad de los P-frames al recibir cada `ReceiverStats` (~1 s):
+     - Si `frames_lost` crece, sube de forma multiplicativa (`×1,5`, mínimo `+0,05`) y asegura al menos `2,5 × pre_fec_loss`.
+     - Si no hay frames perdidos pero `pre_fec_loss_bp ≥ 200` (≥ 2 % de shards recuperados por FEC), sube preventivamente `+0,05`.
+     - Tras **5 intervalos limpios consecutivos** (`frames_lost == 0` y `pre_fec_loss_bp < 50`), baja gradualmente `-0,02` hasta un suelo de `0,08` (tope `0,50`).
+4. **Filtro de `RequestKeyframe` dentro de `< 1 RTT` (`KeyframeCoalescer::request_with_rtt`):**
+   - Registra el instante de cada IDR emitido (`note_forced`, incluido el inicial y los periódicos).
+   - Toda petición `RequestKeyframe` que llegue antes de `min(conn.rtt(), 500 ms)` desde el último IDR se **ignora por completo** (sin dejar un IDR diferido en cola), porque corresponde a pérdidas anteriores a que ese IDR llegara al receptor.
+   - Entre `1 RTT` y `100 ms` se sigue coalesciendo en un único IDR diferido al cumplirse los `100 ms`.
+5. **Inyector de pérdidas reproducible en el emisor (`cs_transport::simloss`, `--sim-loss`, `--sim-loss-seed`):**
+   - Soporta `bernoulli:p=0.02` y `gilbert:p=0.015,r=0.25,h=0.8` directamente en `crossscreen stream` para ensayar canales Wi-Fi degradados sin herramientas externas.
+
+### Verificación experimental de `CODECAPI_AVEncVideoGradualIntraRefresh` en el MFT de Intel
+
+Se añadió `EncoderConfig::intra_refresh: Option<u32>` en `cs-encode` (que configura `CODECAPI_AVEncVideoGradualIntraRefresh` como `VT_UI4` antes de fijar los tipos de entrada/salida y lee el valor devuelto con `GetValue`), el parser `h264::parse_sei_messages` y el modo `cargo run --release -p cs-encode --example encode_bench -- --intra-refresh`.
+
+Resultados medidos sobre **Intel(R) Iris(R) Xe Graphics** (`ven_8086`, MFT H.264 hardware) codificando **120 frames deterministas a 1080p20**:
+
+| `GOP` | Valor pedido (`intra_refresh`) | `SetValue` | `GetValue` leído | IDR / P emitidos | P media / p95 / máx. | Mensajes SEI `(tipo, bytes)` | AU idénticas byte a byte respecto a `None (0)` |
+|---:|---|---|---|---:|---|---|---:|
+| 600 | `None (0)` | — | `Some(0)` | 1 / 119 | 125,0 / 128,4 / 199,6 KiB | `(0, 12): 1`, `(1, 9): 120` | 120 / 120 |
+| 600 | `1 (0x00000001)` | `Ok(())` | `Some(1)` | 1 / 119 | 125,0 / 128,4 / 199,6 KiB | `(0, 12): 1`, `(1, 9): 120` | **120 / 120** |
+| 600 | `30 (0x0000001E)` | `Err(0x80070057)` (`E_INVALIDARG`) | — | — | — | — | — |
+| 600 | `65537 (0x00010001)` | `Ok(())` | `Some(65537)` | 1 / 119 | 125,0 / 128,4 / 199,6 KiB | `(0, 12): 1`, `(1, 9): 120` | **120 / 120** |
+| 600 | `0x0001001E`, `0x0001003C`, `0x0002001E` | `Err(0x80070057)` (`E_INVALIDARG`) | — | — | — | — | — |
+| 30 | `None (0)` | — | `Some(0)` | 4 / 116 | 124,0 / 127,9 / 212,2 KiB | `(0, 12): 4`, `(1, 9): 120` | 120 / 120 |
+| 30 | `1 (0x00000001)` | `Ok(())` | `Some(1)` | 4 / 116 | 124,0 / 127,9 / 212,2 KiB | `(0, 12): 4`, `(1, 9): 120` | **120 / 120** |
+| 30 | `65537 (0x00010001)` | `Ok(())` | `Some(65537)` | 4 / 116 | 124,0 / 127,9 / 212,2 KiB | `(0, 12): 4`, `(1, 9): 120` | **120 / 120** |
+
+**Conclusión:** al igual que ocurre con el cambio de bitrate en caliente y con `AVEncMPVDefaultBPictureCount` (PoC-3), el wrapper MFT de Intel acepta los valores `1` y `0x00010001` en `CODECAPI_AVEncVideoGradualIntraRefresh` sin error y los conserva en `GetValue`, pero **es un *no-op* total**: las 120 unidades de acceso generadas son **100 % idénticas byte a byte** a las codificadas sin la propiedad, solo se emiten SEI `buffering_period (0)` y `pic_timing (1)` (nunca `recovery_point (6)`), y con `GOP = 30` sigue insertando los 4 IDR periódicos. Para disponer de *intra refresh* real en Intel habrá que ir a oneVPL/QSV directo (`mfxExtCodingOption2::IntRefType`). La opción `--intra-refresh` se deja expuesta en `crossscreen stream` y documentada para pruebas con otros MFT (AMD/NVIDIA).
+
+### Comparativa medida del emisor bajo pérdidas en ráfaga Gilbert-Elliott
+
+Pruebas de **15 s (900 frames a 60 fps)** en *loopback* con el flujo `bench_1080p.h264` (1920×1080, 20 Mbps) bajo el mismo canal Gilbert-Elliott (`p = 0,015`, `r = 0,25`, `h = 0,8`, `seed = 24301`, **~4,75 % de datagramas perdidos en ~508–587 ráfagas** de media 4 datagramas), comparando contra `null_sink` y extremo a extremo contra `crossscreen-viewer`:
+
+| Prueba (15 s, 900 frames enviados) | Datagramas enviados / descartados | Shards recup. FEC | Frames entregados (fps) | Frames perdidos post-FEC | `RequestKeyframe` recibidos | IDR forzados (total IDR) | Respuesta petición → IDR (p50 / p95 / máx.) | Evolución `AdaptiveFec` |
+|---|---:|---:|---:|---:|---:|---:|---|---|
+| **Emisor antiguo → `null_sink`** (FEC 0,10 fijo, sin entrelazar, sin filtro RTT) | 32 434 / 1 632 (4,79 %) | 472 | 756 (50,4 fps) | **144** (16,0 %) | **144** | **114** (87 recibidos) | 17,6 / 84,2 / 150,0 ms | fijo `0,10` |
+| **Emisor nuevo → `null_sink`** (FEC P=0,15 adaptativo, IDR=0,50, entrelazado, filtro RTT) | 37 946 / 1 891 (4,75 %) | **1 082** | **886 (59,1 fps)** | **14** (1,6 %) | **14** | **12** (17 recibidos) | **17,3 / 23,8 / 23,8 ms** | `0,15 → 0,23 → 0,34 → 0,50` (3 ajustes) |
+| **Emisor nuevo → `crossscreen-viewer` nuevo** (extremo a extremo) | 37 946 / 1 891 (4,75 %) | **1 082** | **886 (59,0 fps)** | **14** (1,6 %) | **12** | **12** | **18,1 / 22,1 / 22,1 ms** | `0,15 → 0,23 → 0,34 → 0,50` (3 ajustes) |
+
+Resumen del impacto:
+- Los **shards recuperados por FEC se más que duplican** (de 472 a **1 082**) gracias al entrelazado de bloques, a la paridad del 50 % en los IDR y a la subida automática de `AdaptiveFec` (`0,15 → 0,23 → 0,34 → 0,50` en los primeros 4 segundos al detectar pérdidas post-FEC).
+- Los **frames perdidos post-FEC bajan un 90,3 %** (de 144 a **14 frames en 15 s**; una vez `AdaptiveFec` alcanza `0,50` en el segundo 4, solo se pierden 4 frames en los 11 segundos restantes).
+- Los **IDR forzados caen un 89,5 %** (de 114 a **12**) y todos los episodios se recuperan a la primera en **17–18 ms p50 (< 24 ms máx.)**, frente a colas de hasta 150 ms cuando los propios IDR se perdían en las ráfagas.
 
 ## Pendiente
 1. **Latencia de codificación:** QSV directo (oneVPL) o NVENC/AMF en equipos con GPU dedicada (ver PoC-3).

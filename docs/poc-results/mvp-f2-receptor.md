@@ -185,6 +185,58 @@ El emisor informó de una latencia captura→enviado de 21,6 / 33,7 ms (p50 / p9
 - **Definición de «presentación»:** en ventana con DWM, el fotón llega 1–2 refrescos después de `Present()`. El contrato podría fijar si la latencia captura→presentación se mide en `Present()` o en el *vblank* de `GetFrameStatistics`. Aquí se usa `Present()` y el *vblank* se informa aparte.
 - **IDR redundantes:** el emisor podría ignorar los `RequestKeyframe` que lleguen menos de ~1 RTT después de un IDR forzado. El receptor ya evita la mayoría.
 
+## Iteración de resiliencia en Wi-Fi / pérdidas en ráfaga
+
+### Diagnóstico de la primera prueba real entre 2 equipos por Wi-Fi (`v0.0.1-alpha.1`)
+
+En la primera sesión de 60 s entre el portátil de desarrollo y un segundo PC por Wi-Fi (`1366×768@60`, `Duplicate`), el registro del emisor mostró:
+- 996 frames enviados (~16,6 fps), 899 recibidos, **31 frames perdidos post-FEC**, 711 shards recuperados por FEC (`pre_fec_loss_bp` hasta 190, ~1,9 %);
+- RTT inicial de **943,3 ms** y *jitter* de **38,4 ms**;
+- **104 `RequestKeyframe` recibidos** y **90 IDR forzados** (~1,5 por segundo, el **9 % de todos los frames**), con un tamaño medio de **79,5 KiB por IDR** (~68 datagramas) frente a **36,7 KiB por P-frame** (~32 datagramas).
+
+Se produjo un bucle de realimentación positiva:
+1. En cuanto faltaba un solo P-frame, el receptor descartaba todos los P-frames siguientes hasta recibir un IDR (**congelación deliberada**).
+2. `KeyframeLimiter` reenviaba `RequestKeyframe` cada **100 ms** fijos mientras seguía esperando el IDR, un plazo menor que el RTT real en Wi-Fi con cola, disparando varias peticiones por cada pérdida.
+3. Además, `SeqTracker` no avanzaba `last_seq` cuando `Reassembler` emitía `ReassemblyEvent::Lost { frame_seq }`, por lo que al llegar el siguiente frame completo se volvía a contar un hueco falso y se duplicaba el aviso de pérdida.
+4. Cada IDR forzado duplicaba los datagramas en vuelo y tenía más del doble de probabilidad de sufrir una ráfaga Wi-Fi, prolongando la congelación.
+
+### Cambios en el receptor (`apps/viewer`)
+
+1. **Decodificar a través de la pérdida por defecto (`LossPolicy::DecodeThrough`):**
+   - Tras el primer IDR de la sesión, si se pierde un P-frame se avisa a la red para pedir un IDR de saneamiento, pero **se siguen entregando los P-frames siguientes al MFT de Intel**.
+   - El decodificador hardware aplica ocultación de errores (*error concealment*) sobre los macrobloques cuya referencia faltó mientras el resto de la pantalla y el cursor siguen moviéndose a ~60 fps.
+   - Si el MFT devolviese un error en un frame concreto, solo entonces se hace `flush()` y se espera al IDR.
+   - El comportamiento anterior se conserva detrás de `--freeze-on-loss` para comparar en pruebas.
+2. **Política calmada de `RequestKeyframe` (`KeyframePolicy::Calm`, `KeyframeRequester`):**
+   - Envía **una sola petición** al abrirse un episodio de pérdida y suprime todos los avisos adicionales de pérdidas consecutivas mientras el episodio sigue abierto.
+   - No reintenta hasta que vence `max(3 · RTT, 250 ms) · 2^(intentos − 1)` (con tope en 2 s), o hasta que se decodifica un IDR con `frame_seq > seq_en_la_petición` (que cierra el episodio).
+   - `--keyframe-policy legacy` mantiene el limitador fijo de 100 ms para comparar.
+3. **Corrección de `SeqTracker` (`net::SeqTracker::note_lost`):**
+   - Cuando `Reassembler` emite `Lost(seq)`, `SeqTracker` avanza `last_seq = seq` para no volver a contar ese mismo frame como hueco al llegar `seq + 1`.
+4. **Métricas de fluidez y episodios:**
+   - Se miden las **congelaciones visibles** (intervalos **> 200 ms** entre frames presentados consecutivos: cuenta, suma y máximo), los frames decodificados/presentados con referencias rotas (`concealed`), los avisos de pérdida absorbidos sin enviar petición nueva y las estadísticas por episodio de pérdida (peticiones y frames decodificados mientras llega el IDR).
+5. **Simulador de pérdidas en ráfaga Gilbert-Elliott en `file_source`:**
+   - Añadidos `--ge-p`, `--ge-r`, `--ge-loss` y `--seed`, además de `--keyframe-fec`, `--interleave`, `--adaptive-fec`, `--coalesce-ms` y `--sim-rtt-ms`.
+
+### Comparativa medida bajo pérdidas en ráfaga Gilbert-Elliott
+
+Condiciones comunes: flujo `bench_1080p.h264` (1920×1080, 600 AUs codificadas a 20 Mbps con el MFT de Intel, IDR cada 120 frames de ~75 KiB y P-frames de ~33 KiB) transmitido a **60 fps durante 15 s (900 frames)** en *loopback* con el mismo proceso de pérdidas Gilbert-Elliott (`p = 0,015`, `r = 0,25`, `h = 0,8`, `seed = 24301`: **~4,7 % de datagramas perdidos en ~470–580 ráfagas** de media 4 datagramas).
+
+| Configuración | Frames reensamblados | Frames perdidos | Shards recup. FEC | Frames decodif. (`concealed`) | Frames descartados esperando IDR | Frames presentados (fps) | Congelaciones > 200 ms (total / máx.) | `RequestKeyframe` enviados (suprimidos) | Peticiones / episodio (media / máx.) |
+|---|---:|---:|---:|---:|---:|---:|---|---:|---|
+| **1. Receptor antiguo** (`--freeze-on-loss --keyframe-policy legacy`, emisor FEC 0,1 fijo) | 767 (51,1 fps) | 133 | 460 | 550 (0) | **217** | **545 (36,3 fps)** | **3 (867 ms / 367 ms)** | **94** (0) | 1,24 / 4 |
+| **2. Receptor nuevo** (`DecodeThrough + Calm`, mismo emisor FEC 0,1 fijo) | 766 (51,0 fps) | 134 | 424 | **766** (396) | **0** | **659 (43,9 fps)** | **0 (0 ms / 0 ms)** | **72** (81) | 1,37 / 4 |
+| **3. Emisor nuevo + Receptor nuevo** (FEC P=0,15 adaptativo, IDR=0,5, entrelazado + `DecodeThrough + Calm`) | **886 (59,0 fps)** | **14** | **1082** | **886** (12) | **0** | **853 (56,8 fps)** | **0 (0 ms / 0 ms)** | **12** (2) | **1,00 / 1** |
+
+Conclusiones de la medición:
+- **Solo con el cambio en el receptor** (filas 1 → 2, manteniendo el emisor antiguo sin entrelazar):
+  - Desaparecen por completo los **217 frames descartados esperando IDR** y las **3 congelaciones > 200 ms (867 ms acumulados)**.
+  - Todos los 766 frames reensamblados pasan por el MFT con **0 errores y 0 atascos** (decodificación p50 = 0,74 ms, p95 = 1,53 ms); la tasa de presentación sube de **36,3 a 43,9 fps** (+106 frames sustituidos en el buzón por llegar antes del siguiente *vblank*).
+  - Las peticiones `RequestKeyframe` bajan un **23,4 %** (de 94 a 72), absorbiendo **81 avisos de pérdida** sin disparar peticiones duplicadas.
+  - Se verificó visualmente con `--screenshot-concealed` que el MFT presenta el frame con ocultación localizada sin detener la animación ni el cursor.
+- **Combinado con las mejoras del emisor** (fila 3):
+  - Los frames perdidos caen un **89,5 %** (de 133 a **14 en 15 s**), las peticiones de IDR bajan un **87,2 %** (de 94 a **12**, exactamente **1,00 por episodio**, recuperadas en **18,1 ms p50 / 22,1 ms máx.**) y la presentación sube a **56,8 fps con 0 congelaciones** y solo 12 frames con ocultación menor en toda la sesión.
+
 ## Pendiente / no verificado
 
 - `--listen --fullscreen` no se probó (todas las pruebas fueron en ventana para no ocupar la pantalla del usuario). Tampoco `--no-vsync` (tearing) en modo `--listen`: es la vía para bajar la latencia de presentación en ventana.
