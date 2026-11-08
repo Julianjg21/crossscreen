@@ -70,7 +70,7 @@ Ninguno pendiente en el árbol de trabajo.
 **La escritura en el portapapeles real no se ha probado:** el portapapeles del dueño tenía contenido con formato y las pruebas se omiten solas para no destruirlo. Prueba pendiente (con texto plano copiado): `cargo test -p cs-clipboard --test windows_clipboard -- --ignored --test-threads=1`.
 
 ## Próximos pasos (en orden)
-1. Publicar `v0.0.1-alpha.3` y **probar entre los dos equipos el portapapeles (F7)**, la entrada remota (F6) y los perfiles de red desde el panel.
+1. Publicada `v0.0.1-alpha.6`: **probar entre los dos equipos el portapapeles (F7)**, la entrada remota (F6) y los perfiles de red desde el panel.
 2. Probar la transmisión iniciada desde el panel Tauri (`crossscreen-desktop` + `crossscreen-agent`) entre los dos equipos, incluidos los **perfiles de red** (Auto, Wi-Fi, LAN, Ahorro) y la entrada remota (F6).
 3. Probar **por cable** para separar la latencia de red del Wi-Fi de la del pipeline.
 4. Desactivar el ahorro de energía del Wi-Fi en los dos equipos para reducir los picos ocasionales de RTT (120–236 ms).
