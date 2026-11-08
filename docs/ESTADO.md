@@ -70,7 +70,7 @@ Ninguno pendiente en el árbol de trabajo.
 **La escritura en el portapapeles real no se ha probado:** el portapapeles del dueño tenía contenido con formato y las pruebas se omiten solas para no destruirlo. Prueba pendiente (con texto plano copiado): `cargo test -p cs-clipboard --test windows_clipboard -- --ignored --test-threads=1`.
 
 ## Próximos pasos (en orden)
-1. Publicada `v0.0.1-alpha.8` (usar esta: corrige el cierre de la sesión al mover el ratón con versiones mezcladas): **probar entre los dos equipos el portapapeles (F7)**, la entrada remota (F6) y los perfiles de red desde el panel.
+1. ✅ Validado por el dueño entre los dos equipos con `v0.0.1-alpha.8`: monitor extendido, entrada remota (F6), portapapeles (F7) y perfiles de red desde el panel.
 2. Probar la transmisión iniciada desde el panel Tauri (`crossscreen-desktop` + `crossscreen-agent`) entre los dos equipos, incluidos los **perfiles de red** (Auto, Wi-Fi, LAN, Ahorro) y la entrada remota (F6).
 3. Probar **por cable** para separar la latencia de red del Wi-Fi de la del pipeline.
 4. Desactivar el ahorro de energía del Wi-Fi en los dos equipos para reducir los picos ocasionales de RTT (120–236 ms).
@@ -111,3 +111,4 @@ Ninguno pendiente en el árbol de trabajo.
 | 2026-11-08 | Coordinador | **F7 integrado:** `ClipboardBridge` en `cs-clipboard` (hilo Win32 + canales, `prime` para no enviar lo copiado antes de conectar), mensajes `ClipboardText` en el bucle del emisor y del receptor, opciones `--no-clipboard` y contadores en los resúmenes. Arreglo de *binary planting* en el panel (el agente solo se busca junto al ejecutable en release). 204 tests en verde. |
 | 2026-11-08 | Coordinador | Revisión de seguridad de F7: portapapeles **opcional** (desactivado por defecto; `--clipboard` y casilla en el panel, llevado por `cs-ipc` hasta el visor); ranura "el último gana" en lugar de cola sin límite para textos remotos; `prime_unread` evita enviar lo copiado antes de conectar si la primera lectura falló. Release `v0.0.1-alpha.7`. 209 tests en verde. |
 | 2026-11-08 | Dueño + coordinador | **Bug real: la sesión se cerraba al mover el ratón en PC-B.** Causa: el panel `alpha.7` usó un agente viejo (anterior a F6) que seguía en marcha; el emisor no entendía `ControlMessage::Input` (`Serde Deserialization Error`) y cortaba. Arreglos: mensajes desconocidos ignorados sin perder la sincronía del canal, protocolo 0.3 con aviso de funciones ausentes, `BUILD_ID` en el agente y sustitución automática desde el panel (IPC 1.2 `Shutdown`). Release `v0.0.1-alpha.8`. |
+| 2026-11-08 | Dueño | **Validación con `alpha.8` entre PC-A y PC-B:** monitor extendido, ratón y teclado remotos, portapapeles en ambos sentidos y transmisión desde el panel funcionan correctamente. |
