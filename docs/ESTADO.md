@@ -65,15 +65,12 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
 ## Trabajo en curso (2026-11-08)
 Ninguno pendiente en el árbol de trabajo.
 
-**F7 (portapapeles) está a medio camino:** el protocolo (`ControlMessage::ClipboardText`, máx. 1 MiB) y el crate `cs-clipboard` están listos y probados, pero **todavía no están integrados** en `cs-pipeline` ni en el visor. Falta:
-- sondear cada ~250 ms con `ClipboardSync::should_read` y `on_local_change`;
-- enviar y recibir `ClipboardText` por el canal de control;
-- aplicar con `Win32Clipboard::write_text` + `after_local_write`.
+**F7 (portapapeles) integrado** en emisor (`cs-pipeline`) y receptor (`crossscreen-viewer`) mediante `cs_clipboard::ClipboardBridge`: un hilo propio que sondea cada 250 ms y aplica textos remotos sin eco. Activado por defecto; `--no-clipboard` en `stream` o en el visor lo desactiva. Solo se sincronizan los cambios posteriores al inicio de la sesión. **Falta probarlo entre los dos equipos** (en un solo PC ambos lados comparten portapapeles).
 
 **La escritura en el portapapeles real no se ha probado:** el portapapeles del dueño tenía contenido con formato y las pruebas se omiten solas para no destruirlo. Prueba pendiente (con texto plano copiado): `cargo test -p cs-clipboard --test windows_clipboard -- --ignored --test-threads=1`.
 
 ## Próximos pasos (en orden)
-1. Integrar F7 (portapapeles) en emisor y receptor, y probarlo entre los dos equipos.
+1. Publicar `v0.0.1-alpha.3` y **probar entre los dos equipos el portapapeles (F7)**, la entrada remota (F6) y los perfiles de red desde el panel.
 2. Probar la transmisión iniciada desde el panel Tauri (`crossscreen-desktop` + `crossscreen-agent`) entre los dos equipos, incluidos los **perfiles de red** (Auto, Wi-Fi, LAN, Ahorro) y la entrada remota (F6).
 3. Probar **por cable** para separar la latencia de red del Wi-Fi de la del pipeline.
 4. Desactivar el ahorro de energía del Wi-Fi en los dos equipos para reducir los picos ocasionales de RTT (120–236 ms).
@@ -110,3 +107,4 @@ Ninguno pendiente en el árbol de trabajo.
 | 2026-11-08 | 2 agentes en paralelo | **Reconexión automática QUIC (F5) y entrada remota / KVM (F6):** ventana de gracia de 15 s en `cs-pipeline` que conserva vivo el monitor virtual y el hilo de captura mientras reconecta con el receptor; protocolo `ControlMessage::Input`, crate `cs-input` (`SendInput` en coordenadas del escritorio virtual + liberación de teclas/botones en `Drop` y en cortes de red) y captura de ratón/teclado en `crossscreen-viewer` integrados con `cs-pipeline`. |
 | 2026-11-08 | Coordinador | **F6 y F7, piezas base:** `InputEvent` en el protocolo y crate `cs-input` (inyección verificada píxel a píxel en Windows real, también en modo DPI-aware); `ControlMessage::ClipboardText` (límite de mensaje de control subido a 1 MiB + 64 KiB) y crate `cs-clipboard` (`ClipboardSync` sin eco, backend Win32 con ventana propietaria). |
 | 2026-11-08 | Coordinador | Retomado el trabajo de otro agente que se quedó sin cuota: **perfiles de red** en `cs-ipc`/agente/panel (faltaba un import que rompía `crossscreen-agent`) y arreglo de un *cast* en `cs-pipeline` que tenía el **CI de `main` en rojo** desde `6f34136`. 202 tests en verde. |
+| 2026-11-08 | Coordinador | **F7 integrado:** `ClipboardBridge` en `cs-clipboard` (hilo Win32 + canales, `prime` para no enviar lo copiado antes de conectar), mensajes `ClipboardText` en el bucle del emisor y del receptor, opciones `--no-clipboard` y contadores en los resúmenes. Arreglo de *binary planting* en el panel (el agente solo se busca junto al ejecutable en release). 204 tests en verde. |

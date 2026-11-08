@@ -74,6 +74,16 @@ En PC-B: `ipconfig`. Anota la **dirección IPv4** del adaptador que estés usand
    - Al terminar (`--seconds`, Ctrl+C o cierre del visor), el monitor virtual **desaparece solo**.
    - Opciones útiles: `--width 2560 --height 1440 --hz 60`, `--mbps 30`, `--mode duplicate` (duplica la pantalla principal en vez de extender, sin driver).
 
+### Durante la transmisión: qué probar
+- **Monitor extendido:** arrastra ventanas al monitor nuevo de PC-A y comprueba que se ven en PC-B.
+- **Ratón y teclado desde PC-B (F6):** con la ventana del visor enfocada en PC-B, el ratón y el teclado de PC-B controlan el monitor virtual de PC-A. Para desactivarlo: `--no-remote-input` en el visor (PC-B) o en `stream` (PC-A).
+- **Portapapeles (F7), en ambos sentidos:**
+  1. Copia un texto en PC-A (Ctrl+C) y pégalo en PC-B (Ctrl+V). Debería llegar en menos de 1 s.
+  2. Copia otro texto en PC-B y pégalo en PC-A.
+  3. Prueba saltos de línea, tildes y emojis (👍🏽).
+
+  Solo se sincroniza **texto**, de hasta 1 MiB, y solo lo que copies **después** de conectar: lo que ya estaba copiado no se envía. Para desactivarlo: `--no-clipboard` en el visor o en `stream`.
+
 ## 5. Qué anotar y enviarme
 Al terminar, **cada lado imprime un resumen**. Cópialo de los dos equipos, indicando:
 - si era **cable o Wi-Fi** (y qué Wi-Fi: 5 GHz/6 GHz, distancia aproximada al router);
