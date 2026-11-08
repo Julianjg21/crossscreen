@@ -11,12 +11,25 @@
 //! Ambos hilos usan el **mismo** dispositivo D3D11 (con protección
 //! multihilo), así que la superficie del MFT se muestrea sin copias.
 //!
-//! Recuperación (contrato §Vídeo): tras `Lost`, un error del decodificador o
-//! si el primer frame no es IDR, se pide `RequestKeyframe` (la red coalesce a
-//! uno cada 100 ms) y no se entregan P-frames al decodificador hasta el
-//! siguiente IDR. Mientras, la ventana sigue mostrando el último frame bueno.
+//! Recuperación ante pérdidas ([`LossPolicy`]):
+//! - **`DecodeThrough`** (por defecto): tras un `Lost` se siguen entregando
+//!   los P-frames al MFT, que oculta las referencias que faltan (artefactos
+//!   localizados que se arrastran con el movimiento, en vez de congelar la
+//!   imagen), y se pide **un** IDR para sanear. Si el MFT devuelve error o
+//!   deja de producir salida, `flush` y se espera al IDR como en el modo
+//!   anterior.
+//! - **`FreezeOnLoss`** (`--freeze-on-loss`, el comportamiento anterior): no
+//!   se entregan P-frames hasta el siguiente IDR y la ventana mantiene el
+//!   último frame bueno.
+//!
+//! En ambos casos, al empezar (sin referencia) no se decodifica nada hasta el
+//! primer IDR. Cuántas peticiones salen lo decide la red
+//! (`net::KeyframeRequester`); aquí solo se avisa de cada pérdida y de cada
+//! IDR decodificado.
 
-use crate::session::{DecodeInput, KeyframeSignal, MailFrame, Mailbox, SessionStats, UserEvent};
+use crate::session::{
+    DecodeInput, KeyframeSignal, LossPolicy, MailFrame, Mailbox, SessionStats, UserEvent,
+};
 use cs_decode::annexb::is_idr;
 use cs_decode::VideoDecoder;
 use std::collections::VecDeque;
@@ -27,6 +40,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use winit::event_loop::EventLoopProxy;
 
+/// AU seguidas entregadas al MFT sin que salga ningún frame a partir de las
+/// cuales se considera que el decodificador se ha atascado (con baja
+/// latencia y sin B-frames sale un frame por AU).
+const STALL_INPUTS: u32 = 8;
+
 /// Lo que necesita el hilo.
 pub struct Worker {
     pub device: ID3D11Device,
@@ -35,6 +53,16 @@ pub struct Worker {
     pub proxy: EventLoopProxy<UserEvent>,
     pub keyframe_tx: UnboundedSender<KeyframeSignal>,
     pub stats: Arc<Mutex<SessionStats>>,
+    pub policy: LossPolicy,
+}
+
+/// Episodio de pérdida: desde la primera pérdida hasta el IDR que la cura.
+struct Episode {
+    start: Instant,
+    /// `keyframe_requests_sent` al empezar (para contar las del episodio).
+    requests_at_start: u64,
+    /// Frames decodificados y entregados al buzón durante el episodio.
+    frames: u64,
 }
 
 /// Cuerpo del hilo. `ready` recibe el resultado de crear el decodificador.
@@ -54,13 +82,33 @@ pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
     let stats = |f: &mut dyn FnMut(&mut SessionStats)| {
         f(&mut w.stats.lock().unwrap_or_else(|e| e.into_inner()));
     };
-    let request_keyframe = || {
-        let _ = w.keyframe_tx.send(KeyframeSignal::Needed);
+    stats(&mut |s| s.loss_policy = w.policy);
+    let signal = |s: KeyframeSignal| {
+        let _ = w.keyframe_tx.send(s);
     };
-    // Al empezar no hay referencia: hasta el primer IDR no se decodifica nada.
-    let mut awaiting_idr = true;
-    // Instante de la primera pérdida sin recuperar (para medir la recuperación).
-    let mut lost_since: Option<Instant> = None;
+    let requests_now = || {
+        w.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keyframe_requests_sent
+    };
+    let open_episode = |ep: &mut Option<Episode>, at: Instant| {
+        if ep.is_none() {
+            *ep = Some(Episode {
+                start: at,
+                requests_at_start: requests_now(),
+                frames: 0,
+            });
+        }
+    };
+    // Sin referencia utilizable: los P-frames no se entregan al MFT. Al
+    // empezar, tras un error del MFT y (con `FreezeOnLoss`) tras una pérdida.
+    let mut need_idr = true;
+    // Referencias rotas pero se sigue decodificando (`DecodeThrough`).
+    let mut refs_broken = false;
+    let mut episode: Option<Episode> = None;
+    // AU entregadas seguidas sin salida (detección de atasco del MFT).
+    let mut inputs_without_output = 0u32;
     // (pts, frame_seq, recibido) de las AU entregadas al MFT.
     let mut in_flight: VecDeque<(u32, u32, Instant)> = VecDeque::new();
     let mut first_frame_done = false;
@@ -68,43 +116,68 @@ pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
     for msg in w.input.iter() {
         match msg {
             DecodeInput::Lost { frame_seq, at } => {
-                tracing::debug!("frame {frame_seq} perdido: se espera IDR");
-                if !awaiting_idr {
-                    awaiting_idr = true;
-                    lost_since.get_or_insert(at);
+                open_episode(&mut episode, at);
+                match w.policy {
+                    LossPolicy::FreezeOnLoss => {
+                        tracing::debug!("frame {frame_seq} perdido: se espera IDR");
+                        need_idr = true;
+                    }
+                    LossPolicy::DecodeThrough => {
+                        tracing::debug!("frame {frame_seq} perdido: se sigue decodificando");
+                        if !need_idr {
+                            refs_broken = true;
+                        }
+                    }
                 }
-                request_keyframe();
+                signal(KeyframeSignal::Needed {
+                    lost_seq: frame_seq,
+                });
             }
             DecodeInput::Frame { frame, received_at } => {
                 let key = frame.keyframe || is_idr(&frame.data);
-                if awaiting_idr && !key {
+                if need_idr && !key {
                     stats(&mut |s| s.dropped_waiting_idr += 1);
-                    request_keyframe();
+                    signal(KeyframeSignal::Needed {
+                        lost_seq: frame.frame_seq,
+                    });
                     continue;
                 }
                 in_flight.push_back((frame.pts_us, frame.frame_seq, received_at));
                 while in_flight.len() > 32 {
                     in_flight.pop_front();
                 }
-                match decoder.decode(&frame.data, i64::from(frame.pts_us)) {
+                let failure = match decoder.decode(&frame.data, i64::from(frame.pts_us)) {
                     Ok(out) => {
-                        if key && awaiting_idr {
-                            awaiting_idr = false;
-                            let _ = w.keyframe_tx.send(KeyframeSignal::Received);
-                            if let Some(t) = lost_since.take() {
-                                let rec = t.elapsed();
+                        if key {
+                            need_idr = false;
+                            refs_broken = false;
+                            signal(KeyframeSignal::Decoded {
+                                frame_seq: frame.frame_seq,
+                            });
+                            if let Some(ep) = episode.take() {
+                                let rec = ep.start.elapsed();
+                                let reqs = requests_now().saturating_sub(ep.requests_at_start);
                                 tracing::info!(
-                                    "recuperado con el IDR {} en {:.1} ms",
+                                    "recuperado con el IDR {} en {:.1} ms ({} peticiones, {} frames durante el episodio)",
                                     frame.frame_seq,
-                                    rec.as_secs_f64() * 1e3
+                                    rec.as_secs_f64() * 1e3,
+                                    reqs,
+                                    ep.frames
                                 );
-                                stats(&mut |s| s.recovery.record(rec));
+                                stats(&mut |s| {
+                                    s.recovery.record(rec);
+                                    s.episode_requests.push(reqs);
+                                    s.episode_frames.push(ep.frames);
+                                });
                             }
                         }
+                        let concealed = refs_broken;
+                        let mut produced = 0u32;
                         // Normalmente sale un frame por AU; si saliera más de
                         // uno, todos pasan por el buzón y gana el último.
                         let mut next = out;
                         while let Some(df) = next {
+                            produced += 1;
                             let decoded_at = Instant::now();
                             let pts = df.pts_us as u32;
                             let (seq, recv) = in_flight
@@ -124,9 +197,16 @@ pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
                                 pts_us: pts,
                                 received_at: recv,
                                 decoded_at,
+                                concealed,
                             });
+                            if let Some(ep) = episode.as_mut() {
+                                ep.frames += 1;
+                            }
                             stats(&mut |s| {
                                 s.frames_decoded += 1;
+                                if concealed {
+                                    s.frames_decoded_concealed += 1;
+                                }
                                 s.decode.record(decode_time);
                                 s.last_decode_us = decode_time.as_micros() as u32;
                                 s.video_size = size;
@@ -141,21 +221,46 @@ pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
                             let _ = w.proxy.send_event(UserEvent::FrameReady);
                             next = decoder.next_ready();
                         }
+                        if produced > 0 {
+                            inputs_without_output = 0;
+                            None
+                        } else {
+                            inputs_without_output += 1;
+                            (inputs_without_output >= STALL_INPUTS).then(|| {
+                                stats(&mut |s| s.decode_stalls += 1);
+                                format!("{STALL_INPUTS} AU seguidas sin salida")
+                            })
+                        }
                     }
                     Err(e) => {
-                        tracing::warn!("decodificación del frame {}: {e}", frame.frame_seq);
                         stats(&mut |s| s.decode_errors += 1);
-                        awaiting_idr = true;
-                        lost_since.get_or_insert(received_at);
-                        in_flight.clear();
-                        if let Err(e) = decoder.flush() {
-                            tracing::warn!("flush del decodificador: {e}");
-                        }
-                        request_keyframe();
+                        Some(e.to_string())
                     }
+                };
+                if let Some(why) = failure {
+                    // Respaldo: el MFT no tolera la pérdida → vaciarlo y
+                    // esperar al IDR (comportamiento de `FreezeOnLoss`).
+                    tracing::warn!(
+                        "decodificación del frame {}: {why}; flush y se espera IDR",
+                        frame.frame_seq
+                    );
+                    need_idr = true;
+                    refs_broken = false;
+                    inputs_without_output = 0;
+                    open_episode(&mut episode, received_at);
+                    in_flight.clear();
+                    if let Err(e) = decoder.flush() {
+                        tracing::warn!("flush del decodificador: {e}");
+                    }
+                    signal(KeyframeSignal::Needed {
+                        lost_seq: frame.frame_seq,
+                    });
                 }
             }
         }
+    }
+    if episode.is_some() {
+        stats(&mut |s| s.episode_open_at_end = true);
     }
     // Soltar lo que quede en el buzón antes que el decodificador.
     drop(w.mailbox.take());

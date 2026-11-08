@@ -14,7 +14,8 @@
 //! crossscreen-viewer --file x.h264 --fps 60 [--fullscreen] [--monitor N] [--seconds S]
 //! crossscreen-viewer --listen 0.0.0.0:47810 [--data-dir D] [--fullscreen] [--monitor N]
 //!                    [--size 1920x1080] [--once] [--seconds S] [--same-host-latency]
-//!                    [--screenshot p.png --screenshot-frame N]
+//!                    [--screenshot p.png --screenshot-frame N [--screenshot-concealed]]
+//!                    [--freeze-on-loss] [--keyframe-policy calm|legacy]
 //! ```
 
 #[cfg(windows)]
@@ -93,6 +94,21 @@ pub struct Args {
     /// Frame de vídeo presentado (desde 0) que se captura con `--screenshot`.
     #[arg(long, default_value_t = 30)]
     pub screenshot_frame: u64,
+    /// Con `--screenshot`: capturar el primer frame presentado con posibles
+    /// artefactos de ocultación (decodificado tras una pérdida) a partir del
+    /// número `--screenshot-frame`.
+    #[arg(long)]
+    pub screenshot_concealed: bool,
+    /// Comportamiento anterior ante pérdidas: descartar los P-frames y
+    /// congelar la imagen hasta el siguiente IDR (por defecto se siguen
+    /// decodificando y el MFT oculta las referencias que faltan).
+    #[arg(long)]
+    pub freeze_on_loss: bool,
+    /// Política de `RequestKeyframe`: `calm` (una por episodio, espera
+    /// `max(3·RTT, 250 ms)` con *backoff* hasta 2 s) o `legacy` (cada 100 ms
+    /// mientras dure la pérdida).
+    #[arg(long, value_enum, default_value_t = session::KeyframePolicy::Calm)]
+    pub keyframe_policy: session::KeyframePolicy,
     /// Ocultar el cursor superpuesto de demostración (solo `--file`).
     #[arg(long)]
     pub no_cursor: bool,

@@ -8,17 +8,21 @@
 //! `EventLoopProxy::send_event`, que no espera.
 
 use crate::clock;
-use crate::session::{DecodeInput, KeyframeSignal, SessionStats, StartSession, UiCmd, UserEvent};
+use crate::session::{
+    DecodeInput, KeyframePolicy, KeyframeSignal, SessionStats, StartSession, UiCmd, UserEvent,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use cs_core::{Codec, CodecSupport, H264Profile, Mode, Roles};
 use cs_protocol::control::{
     ByeReason, ControlMessage, Hello, ReceiverStats, SinkCapabilities, StreamId,
 };
+use cs_protocol::video::FragmentHeader;
 use cs_protocol::{ALPN, PROTOCOL_VERSION};
 use cs_security::identity::Identity;
 use cs_security::trust::TrustStore;
 use cs_security::verifier::PeerPolicy;
 use cs_transport::{Connection, Endpoint, FramedStream, Reassembler, ReassemblyEvent};
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::mpsc::{SyncSender, TrySendError};
@@ -34,6 +38,11 @@ pub const STREAM_ID: StreamId = 1;
 const DECODE_QUEUE: usize = 16;
 /// Mínimo entre dos `RequestKeyframe` (contrato: como máximo uno cada 100 ms).
 pub const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_millis(100);
+/// Espera mínima tras un `RequestKeyframe` antes de repetirlo (política
+/// calmada): `max(3·RTT, KEYFRAME_MIN_WAIT)`.
+pub const KEYFRAME_MIN_WAIT: Duration = Duration::from_millis(250);
+/// Tope del *backoff* exponencial de la espera entre peticiones repetidas.
+pub const KEYFRAME_MAX_WAIT: Duration = Duration::from_secs(2);
 /// Espera máxima de cada paso del arranque de sesión.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -45,6 +54,7 @@ pub struct NetConfig {
     pub once: bool,
     pub native_mode: Mode,
     pub dpi: u16,
+    pub keyframe_policy: KeyframePolicy,
 }
 
 /// Arranca el hilo de red. Al terminar envía `UserEvent::NetDone`.
@@ -100,10 +110,149 @@ impl KeyframeLimiter {
     }
 }
 
-/// Detecta huecos en `frame_seq` (consecutivo según el contrato). El
-/// `Reassembler` solo declara perdidos los frames de los que recibió algún
-/// fragmento; si se pierden **todos** los datagramas de un frame (habitual
-/// en P-frames de uno o dos datagramas), solo se nota por el hueco.
+/// `a` es posterior a `b` en el espacio circular de `frame_seq`.
+fn seq_after(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) > 0
+}
+
+/// Petición de IDR en vuelo (política calmada).
+#[derive(Debug, Clone, Copy)]
+struct PendingRequest {
+    sent_at: Instant,
+    /// Mayor `frame_seq` visto al pedir: solo un IDR posterior responde a
+    /// esta petición.
+    seq_at_request: Option<u32>,
+    wait: Duration,
+}
+
+/// Decide cuándo enviar `RequestKeyframe`.
+///
+/// **Política calmada** (por defecto). En la primera prueba por Wi-Fi, pedir
+/// un IDR cada 100 ms mientras durase la pérdida creaba un círculo vicioso:
+/// los IDR (≈2× un P-frame) también se perdían en las ráfagas, se pedían más
+/// y saturaban el enlace (104 peticiones y 90 IDR forzados en 60 s,
+/// recuperación de hasta 6,4 s). Ahora:
+/// - una pérdida sin curar («sucio») provoca **una** petición;
+/// - mientras esa petición está pendiente no se envía otra, sea cual sea la
+///   pérdida (el IDR que viene en camino cura todo lo anterior a él);
+/// - la petición se da por respondida al decodificar un IDR con `frame_seq`
+///   mayor que el último visto al pedir;
+/// - si en `max(3·RTT, 250 ms)` no llega, y sigue sucio, se repite con espera
+///   doble cada vez (*backoff*) hasta [`KEYFRAME_MAX_WAIT`].
+///
+/// **Política anterior** (`--keyframe-policy legacy`): [`KeyframeLimiter`].
+#[derive(Debug)]
+pub struct KeyframeRequester {
+    policy: KeyframePolicy,
+    legacy: KeyframeLimiter,
+    /// Pérdida más reciente aún no curada por un IDR.
+    dirty: Option<u32>,
+    pending: Option<PendingRequest>,
+    backoff: u32,
+}
+
+/// Qué enviar tras [`KeyframeRequester::poll`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyframeAction {
+    /// Primera petición del episodio (o política anterior).
+    Send,
+    /// Repetición porque venció la espera sin IDR.
+    Retry,
+}
+
+impl KeyframeRequester {
+    pub fn new(policy: KeyframePolicy) -> Self {
+        KeyframeRequester {
+            policy,
+            legacy: KeyframeLimiter::default(),
+            dirty: None,
+            pending: None,
+            backoff: 0,
+        }
+    }
+
+    /// Se perdió (o no se pudo decodificar) `lost_seq`. Devuelve `true` si el
+    /// aviso queda cubierto por una petición ya pendiente.
+    pub fn need(&mut self, lost_seq: u32) -> bool {
+        match self.policy {
+            KeyframePolicy::Legacy => {
+                self.legacy.request();
+                false
+            }
+            KeyframePolicy::Calm => {
+                if self.dirty.is_none_or(|d| seq_after(lost_seq, d)) {
+                    self.dirty = Some(lost_seq);
+                }
+                self.pending.is_some()
+            }
+        }
+    }
+
+    /// Se decodificó el IDR `seq`.
+    pub fn keyframe_decoded(&mut self, seq: u32) {
+        match self.policy {
+            KeyframePolicy::Legacy => self.legacy.cancel(),
+            KeyframePolicy::Calm => {
+                if self.dirty.is_some_and(|d| seq_after(seq, d)) {
+                    self.dirty = None;
+                }
+                if let Some(p) = self.pending {
+                    if p.seq_at_request.is_none_or(|r| seq_after(seq, r)) {
+                        self.pending = None;
+                        self.backoff = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Espera antes de repetir una petición.
+    pub fn wait_for(rtt: Duration, backoff: u32) -> Duration {
+        let base = (rtt * 3).max(KEYFRAME_MIN_WAIT);
+        (base * (1u32 << backoff.min(4))).min(KEYFRAME_MAX_WAIT.max(base))
+    }
+
+    /// ¿Hay que enviar ahora? `highest_seq` es el mayor `frame_seq` visto.
+    pub fn poll(
+        &mut self,
+        now: Instant,
+        rtt: Duration,
+        highest_seq: Option<u32>,
+    ) -> Option<KeyframeAction> {
+        match self.policy {
+            KeyframePolicy::Legacy => self.legacy.due(now).then_some(KeyframeAction::Send),
+            KeyframePolicy::Calm => {
+                let action = match self.pending {
+                    Some(p) if now.duration_since(p.sent_at) < p.wait => return None,
+                    Some(_) if self.dirty.is_none() => {
+                        // Venció, pero algo ya curó la pérdida: nada que hacer.
+                        self.pending = None;
+                        self.backoff = 0;
+                        return None;
+                    }
+                    Some(_) => {
+                        self.backoff = (self.backoff + 1).min(8);
+                        KeyframeAction::Retry
+                    }
+                    None if self.dirty.is_some() => KeyframeAction::Send,
+                    None => return None,
+                };
+                self.pending = Some(PendingRequest {
+                    sent_at: now,
+                    seq_at_request: highest_seq,
+                    wait: Self::wait_for(rtt, self.backoff),
+                });
+                Some(action)
+            }
+        }
+    }
+}
+
+/// Detecta huecos en `frame_seq` (consecutivo según el contrato) que el
+/// `Reassembler` no haya notificado. Desde la revisión del contrato el
+/// reensamblador ya emite `Lost` para los huecos (hasta 256 por hueco), y
+/// como sus eventos llegan en orden este detector no ve hueco y no hay doble
+/// notificación; queda como respaldo para huecos mayores.
 #[derive(Debug, Default)]
 pub struct SeqTracker {
     next: Option<u32>,
@@ -406,6 +555,7 @@ async fn session(
         &stats,
         early_shape,
         early_pos,
+        cfg.keyframe_policy,
     )
     .await;
     ctl.finish();
@@ -430,6 +580,7 @@ async fn streaming(
     stats: &Arc<Mutex<SessionStats>>,
     early_shape: Option<cs_protocol::control::CursorShape>,
     early_pos: Option<(i32, i32, bool)>,
+    keyframe_policy: KeyframePolicy,
 ) -> Result<Exit> {
     match timed("la ventana y el decodificador", async {
         ready_rx
@@ -467,9 +618,14 @@ async fn streaming(
     }
 
     let mut reasm = Reassembler::new(STREAM_ID);
-    let mut keyframes = KeyframeLimiter::default();
+    let mut keyframes = KeyframeRequester::new(keyframe_policy);
     let mut jitter = Jitter::default();
     let mut seqs = SeqTracker::default();
+    // Mayor `frame_seq` visto (entregado o perdido).
+    let mut highest_seq: Option<u32> = None;
+    // `frame_seq` recientes de los que llegó algún datagrama: un `Lost` de un
+    // frame que no está aquí es un frame perdido por completo.
+    let mut seen_seqs: BTreeSet<u32> = BTreeSet::new();
     // Frame perdido pendiente de avisar al decodificador (cola llena).
     let mut overflow_lost: Option<u32> = None;
     let mut stats_tick = tokio::time::interval(Duration::from_secs(1));
@@ -484,6 +640,12 @@ async fn streaming(
                     Ok(d) => d,
                     Err(e) => break Exit::Ended(format!("conexión cerrada: {e}")),
                 };
+                if let Ok((h, _)) = FragmentHeader::decode(&d) {
+                    seen_seqs.insert(h.frame_seq);
+                    if seen_seqs.len() > 1024 {
+                        seen_seqs.pop_first();
+                    }
+                }
                 let events = match reasm.push(&d) {
                     Ok(ev) => ev,
                     Err(e) => {
@@ -497,13 +659,18 @@ async fn streaming(
                         ReassemblyEvent::Frame(f) => f.frame_seq,
                         ReassemblyEvent::Lost { frame_seq } => *frame_seq,
                     };
-                    // Frames de los que no llegó ningún datagrama: el
-                    // reensamblador no los ve, pero `frame_seq` es consecutivo.
+                    if highest_seq.is_none_or(|h| seq_after(seq, h)) {
+                        highest_seq = Some(seq);
+                    }
+                    // Respaldo: huecos que el reensamblador no notificó.
                     let gap = seqs.observe(seq);
                     let mut inputs = Vec::with_capacity(2);
                     if let Some((first, n)) = gap {
-                        tracing::debug!("hueco de {n} frame(s) desde {first}");
-                        lock().frames_missing += u64::from(n);
+                        tracing::debug!("hueco no notificado de {n} frame(s) desde {first}");
+                        let mut s = lock();
+                        s.frames_gap_unreported += u64::from(n);
+                        s.frames_missing += u64::from(n);
+                        drop(s);
                         inputs.push(DecodeInput::Lost { frame_seq: first, at: now });
                     }
                     inputs.push(match ev {
@@ -512,7 +679,14 @@ async fn streaming(
                             DecodeInput::Frame { frame: f, received_at: now }
                         }
                         ReassemblyEvent::Lost { frame_seq } => {
-                            tracing::debug!("reensamblador: frame {frame_seq} perdido");
+                            let none = !seen_seqs.contains(&frame_seq);
+                            tracing::debug!(
+                                "reensamblador: frame {frame_seq} perdido{}",
+                                if none { " (ningún datagrama)" } else { "" }
+                            );
+                            if none {
+                                lock().frames_missing += 1;
+                            }
                             DecodeInput::Lost { frame_seq, at: now }
                         }
                     });
@@ -534,7 +708,9 @@ async fn streaming(
                             Err(TrySendError::Full(_)) => {
                                 lock().decode_queue_overflows += 1;
                                 overflow_lost = Some(seq);
-                                keyframes.request();
+                                if keyframes.need(seq) {
+                                    lock().keyframe_needs_suppressed += 1;
+                                }
                             }
                             Err(TrySendError::Disconnected(_)) => {
                                 break 'main Exit::Ended("el decodificador terminó".into())
@@ -566,23 +742,28 @@ async fn streaming(
             },
             Some(sig) = keyframe_rx.recv() => {
                 match sig {
-                    KeyframeSignal::Needed => keyframes.request(),
-                    KeyframeSignal::Received => keyframes.cancel(),
+                    KeyframeSignal::Needed { lost_seq } => {
+                        if keyframes.need(lost_seq) {
+                            lock().keyframe_needs_suppressed += 1;
+                        }
+                    }
+                    KeyframeSignal::Decoded { frame_seq } => keyframes.keyframe_decoded(frame_seq),
                 }
-                if keyframes.due(Instant::now()) {
-                    send_keyframe_request(ctl, stats).await?;
+                if let Some(a) = keyframes.poll(Instant::now(), conn.rtt(), highest_seq) {
+                    send_keyframe_request(ctl, stats, a).await?;
                 }
             }
             _ = kf_tick.tick() => {
-                if keyframes.due(Instant::now()) {
-                    send_keyframe_request(ctl, stats).await?;
+                if let Some(a) = keyframes.poll(Instant::now(), conn.rtt(), highest_seq) {
+                    send_keyframe_request(ctl, stats, a).await?;
                 }
             }
             _ = stats_tick.tick() => {
                 let r = reasm.stats();
                 let (decode_us, missing) = {
-                    let s = lock();
-                    (s.last_decode_us, s.frames_missing)
+                    let mut s = lock();
+                    s.rtt = conn.rtt();
+                    (s.last_decode_us, s.frames_gap_unreported)
                 };
                 // Estimación: shards de datos reconstruidos por FEC respecto a
                 // los datagramas recibidos (la paridad perdida no se ve).
@@ -607,7 +788,8 @@ async fn streaming(
     let mut s = lock();
     s.datagrams = r.datagrams;
     s.frames_received = r.frames_delivered;
-    s.frames_lost = r.frames_lost + s.frames_missing;
+    s.frames_lost = r.frames_lost + s.frames_gap_unreported;
+    s.rtt = conn.rtt();
     s.shards_recovered = r.shards_recovered;
     s.late_datagrams = r.late_datagrams;
     drop(s);
@@ -619,16 +801,18 @@ async fn streaming(
 async fn send_keyframe_request(
     ctl: &mut FramedStream,
     stats: &Arc<Mutex<SessionStats>>,
+    action: KeyframeAction,
 ) -> Result<()> {
     ctl.send(&ControlMessage::RequestKeyframe {
         stream_id: STREAM_ID,
     })
     .await?;
-    stats
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .keyframe_requests_sent += 1;
-    tracing::debug!("RequestKeyframe enviado");
+    let mut s = stats.lock().unwrap_or_else(|e| e.into_inner());
+    s.keyframe_requests_sent += 1;
+    if action == KeyframeAction::Retry {
+        s.keyframe_request_timeouts += 1;
+    }
+    tracing::debug!("RequestKeyframe enviado ({action:?})");
     Ok(())
 }
 
@@ -660,6 +844,108 @@ mod tests {
             !k.due(t0 + Duration::from_secs(1)),
             "cancelada al llegar el IDR"
         );
+    }
+
+    fn calm() -> KeyframeRequester {
+        KeyframeRequester::new(KeyframePolicy::Calm)
+    }
+
+    #[test]
+    fn calm_sends_one_request_per_episode() {
+        let t0 = Instant::now();
+        let rtt = Duration::from_millis(5);
+        let mut k = calm();
+        assert_eq!(k.poll(t0, rtt, Some(10)), None, "sin pérdida no se pide");
+        assert!(!k.need(10));
+        assert_eq!(k.poll(t0, rtt, Some(10)), Some(KeyframeAction::Send));
+        // Más pérdidas (y P-frames descartados) con la petición pendiente:
+        // no generan peticiones nuevas.
+        for (i, seq) in (11..30).enumerate() {
+            assert!(k.need(seq), "cubierta por la pendiente");
+            let t = t0 + Duration::from_millis(10 * i as u64);
+            assert_eq!(k.poll(t, rtt, Some(seq)), None);
+        }
+        // Un IDR anterior o igual al último visto al pedir no responde.
+        k.keyframe_decoded(10);
+        assert_eq!(k.poll(t0 + Duration::from_millis(200), rtt, Some(30)), None);
+        // El IDR pedido (posterior) cura todo: no se pide más.
+        k.keyframe_decoded(31);
+        assert_eq!(k.poll(t0 + Duration::from_secs(5), rtt, Some(31)), None);
+        // Una pérdida nueva tras el IDR abre otro episodio enseguida.
+        assert!(!k.need(40));
+        assert_eq!(
+            k.poll(t0 + Duration::from_secs(5), rtt, Some(40)),
+            Some(KeyframeAction::Send)
+        );
+    }
+
+    #[test]
+    fn calm_retries_with_backoff() {
+        let t0 = Instant::now();
+        let rtt = Duration::from_millis(20);
+        assert_eq!(KeyframeRequester::wait_for(rtt, 0), KEYFRAME_MIN_WAIT);
+        assert_eq!(
+            KeyframeRequester::wait_for(Duration::from_millis(100), 0),
+            Duration::from_millis(300),
+            "3·RTT si es mayor que 250 ms"
+        );
+        assert_eq!(KeyframeRequester::wait_for(rtt, 10), KEYFRAME_MAX_WAIT);
+        let mut k = calm();
+        k.need(1);
+        assert_eq!(k.poll(t0, rtt, Some(1)), Some(KeyframeAction::Send));
+        let ms = |m| t0 + Duration::from_millis(m);
+        assert_eq!(k.poll(ms(249), rtt, Some(5)), None);
+        assert_eq!(k.poll(ms(250), rtt, Some(5)), Some(KeyframeAction::Retry));
+        // Segunda espera: 500 ms.
+        assert_eq!(k.poll(ms(749), rtt, Some(5)), None);
+        assert_eq!(k.poll(ms(750), rtt, Some(5)), Some(KeyframeAction::Retry));
+        // Tercera: 1 s; cuarta: 2 s (tope).
+        assert_eq!(k.poll(ms(1750), rtt, Some(5)), Some(KeyframeAction::Retry));
+        assert_eq!(k.poll(ms(3749), rtt, Some(5)), None);
+        assert_eq!(k.poll(ms(3750), rtt, Some(5)), Some(KeyframeAction::Retry));
+        assert_eq!(k.poll(ms(5750), rtt, Some(5)), Some(KeyframeAction::Retry));
+        // Llega el IDR: el backoff vuelve a empezar.
+        k.keyframe_decoded(6);
+        k.need(7);
+        assert_eq!(k.poll(ms(5760), rtt, Some(7)), Some(KeyframeAction::Send));
+        assert_eq!(k.poll(ms(6010), rtt, Some(7)), Some(KeyframeAction::Retry));
+    }
+
+    #[test]
+    fn calm_expired_but_healed_does_not_retry() {
+        let t0 = Instant::now();
+        let rtt = Duration::from_millis(5);
+        let mut k = calm();
+        k.need(5);
+        assert_eq!(k.poll(t0, rtt, Some(8)), Some(KeyframeAction::Send));
+        // Un IDR periódico que ya venía (seq 7 ≤ 8) cura la pérdida 5, pero no
+        // responde a la petición: no se repite al vencer porque ya no hay
+        // nada que curar.
+        k.keyframe_decoded(7);
+        assert_eq!(k.poll(t0 + Duration::from_secs(1), rtt, Some(20)), None);
+        assert_eq!(k.poll(t0 + Duration::from_secs(2), rtt, Some(20)), None);
+    }
+
+    #[test]
+    fn legacy_policy_requests_every_100ms() {
+        let t0 = Instant::now();
+        let rtt = Duration::from_millis(5);
+        let mut k = KeyframeRequester::new(KeyframePolicy::Legacy);
+        k.need(1);
+        assert_eq!(k.poll(t0, rtt, None), Some(KeyframeAction::Send));
+        k.need(2);
+        assert_eq!(
+            k.poll(t0 + Duration::from_millis(100), rtt, None),
+            Some(KeyframeAction::Send)
+        );
+    }
+
+    #[test]
+    fn seq_after_wraps() {
+        assert!(seq_after(1, 0));
+        assert!(!seq_after(0, 0));
+        assert!(!seq_after(0, 1));
+        assert!(seq_after(0, u32::MAX));
     }
 
     #[test]

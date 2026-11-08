@@ -46,10 +46,39 @@ pub struct StartSession {
 /// Del decodificador a la red, para `RequestKeyframe`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyframeSignal {
-    /// Hace falta un IDR (pérdida, error o primer frame no IDR).
-    Needed,
-    /// Ya se decodificó un IDR: cancelar la petición pendiente, si la hay.
-    Received,
+    /// Hace falta un IDR: se perdió (o no se pudo decodificar) `lost_seq`,
+    /// o el primer frame no era IDR.
+    Needed { lost_seq: u32 },
+    /// Se decodificó el IDR `frame_seq` (se avisa de **todos**, pedidos o
+    /// periódicos): cura cualquier pérdida anterior a él.
+    Decoded { frame_seq: u32 },
+}
+
+/// Qué hace el decodificador tras una pérdida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LossPolicy {
+    /// Por defecto: seguir entregando los P-frames al MFT, que oculta las
+    /// referencias que faltan (artefactos localizados en vez de congelación),
+    /// y pedir **un** IDR para sanear. Si el MFT devuelve error, `flush` y
+    /// esperar al IDR (como `FreezeOnLoss`).
+    #[default]
+    DecodeThrough,
+    /// Comportamiento anterior (`--freeze-on-loss`): descartar todos los
+    /// P-frames hasta el siguiente IDR y mantener el último frame bueno.
+    FreezeOnLoss,
+}
+
+/// Política de envío de `RequestKeyframe` (ver `net::KeyframeRequester`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum KeyframePolicy {
+    /// Por defecto: una petición por episodio; no se repite hasta decodificar
+    /// un IDR posterior a la petición o hasta `max(3·RTT, 250 ms)`, con
+    /// *backoff* exponencial hasta 2 s si los IDR siguen sin llegar.
+    #[default]
+    Calm,
+    /// Anterior: cada pérdida o P-frame descartado pide IDR; como mucho una
+    /// petición cada 100 ms.
+    Legacy,
 }
 
 /// Órdenes del hilo de la ventana al de red.
@@ -78,6 +107,9 @@ pub struct MailFrame {
     pub pts_us: u32,
     pub received_at: Instant,
     pub decoded_at: Instant,
+    /// Decodificado con referencias rotas (entre una pérdida y el IDR que la
+    /// cura): la imagen puede llevar artefactos de ocultación.
+    pub concealed: bool,
 }
 
 /// Buzón de una plaza, «el último gana»: el decodificador deja el frame más
@@ -104,6 +136,10 @@ impl Mailbox {
     }
 }
 
+/// Hueco entre dos frames presentados a partir del cual se cuenta una
+/// congelación visible.
+pub const FREEZE_THRESHOLD: Duration = Duration::from_millis(200);
+
 /// Métricas de una sesión (las escriben los tres hilos).
 #[derive(Debug, Default)]
 pub struct SessionStats {
@@ -111,29 +147,61 @@ pub struct SessionStats {
     // Red.
     pub datagrams: u64,
     pub frames_received: u64,
-    /// Perdidos en total: los que declara el reensamblador + `frames_missing`.
+    /// Perdidos en total: los que declara el reensamblador (que ya incluye
+    /// los huecos de `frame_seq`) + `frames_gap_unreported`.
     pub frames_lost: u64,
-    /// Frames sin ningún datagrama recibido (huecos en `frame_seq`).
+    /// De los perdidos, cuántos no tuvieron ningún datagrama recibido.
     pub frames_missing: u64,
+    /// Huecos de `frame_seq` que el reensamblador no notificó (respaldo de
+    /// `net::SeqTracker`; con el `cs-transport` actual debería ser 0).
+    pub frames_gap_unreported: u64,
     pub shards_recovered: u64,
     pub late_datagrams: u64,
     pub decode_queue_overflows: u64,
     pub keyframe_requests_sent: u64,
+    /// Peticiones repetidas porque venció la espera sin IDR (política calmada).
+    pub keyframe_request_timeouts: u64,
+    /// Avisos de pérdida que no generaron petición porque ya había una pendiente.
+    pub keyframe_needs_suppressed: u64,
+    /// RTT de QUIC (último valor leído) para la espera de las peticiones.
+    pub rtt: Duration,
     pub cursor_shapes: u64,
     pub cursor_positions: u64,
     // Decodificación.
     pub frames_decoded: u64,
     pub decode_errors: u64,
     pub dropped_waiting_idr: u64,
+    /// Veces que el MFT dejó de producir salida (tratadas como error).
+    pub decode_stalls: u64,
     pub mailbox_replaced: u64,
     pub decode: LatencyStats,
-    /// Desde el primer `Lost`/error hasta el primer IDR decodificado.
+    /// Política tras pérdida (para el informe).
+    pub loss_policy: LossPolicy,
+    /// Frames decodificados con referencias rotas (con `DecodeThrough`).
+    pub frames_decoded_concealed: u64,
+    /// Desde la primera pérdida de un episodio hasta el primer IDR
+    /// decodificado (primera imagen totalmente limpia).
     pub recovery: LatencyStats,
+    /// Por episodio cerrado: `RequestKeyframe` enviados durante el episodio.
+    pub episode_requests: Vec<u64>,
+    /// Por episodio cerrado: frames decodificados (y entregados al buzón)
+    /// durante el episodio. Con `FreezeOnLoss` debería ser 0.
+    pub episode_frames: Vec<u64>,
+    /// Episodio abierto al terminar la sesión (sin IDR que lo cerrara).
+    pub episode_open_at_end: bool,
     pub first_frame: Option<Duration>,
     pub last_decode_us: u32,
     // Presentación.
     pub frames_presented: u64,
+    /// Presentados con posibles artefactos (decodificados con referencias rotas).
+    pub frames_presented_concealed: u64,
     pub cursor_only_presents: u64,
+    /// Huecos entre frames de vídeo nuevos presentados mayores que
+    /// [`FREEZE_THRESHOLD`] (congelaciones visibles). Ojo: un emisor que solo
+    /// envía cuando cambia la pantalla también produce huecos sin pérdidas.
+    pub freezes: u64,
+    pub frozen_total: Duration,
+    pub longest_freeze: Duration,
     /// Decodificado (buzón) → `Present()` devuelto.
     pub present: LatencyStats,
     /// Frame reensamblado → `Present()` devuelto.
@@ -185,21 +253,55 @@ impl SessionStats {
             self.decode_queue_overflows
         );
         println!(
-            "decodificación: {} frames, {} errores, {} descartados esperando IDR, {} sustituidos en el buzón sin presentar, {} RequestKeyframe enviados",
+            "decodificación ({}): {} frames ({} con referencias rotas), {} errores, {} atascos, {} descartados esperando IDR, {} sustituidos en el buzón sin presentar",
+            match self.loss_policy {
+                LossPolicy::DecodeThrough => "decodificar a través de la pérdida",
+                LossPolicy::FreezeOnLoss => "congelar hasta IDR",
+            },
             self.frames_decoded,
+            self.frames_decoded_concealed,
             self.decode_errors,
+            self.decode_stalls,
             self.dropped_waiting_idr,
             self.mailbox_replaced,
-            self.keyframe_requests_sent
         );
         println!(
-            "presentación: {} frames ({:.1} fps), {} repintados solo de cursor; cursor: {} formas, {} posiciones",
+            "RequestKeyframe: {} enviados ({} por espera vencida), {} avisos de pérdida sin petición nueva (ya había una pendiente), RTT {:.1} ms",
+            self.keyframe_requests_sent,
+            self.keyframe_request_timeouts,
+            self.keyframe_needs_suppressed,
+            self.rtt.as_secs_f64() * 1e3
+        );
+        println!(
+            "presentación: {} frames ({:.1} fps, {} con posibles artefactos), {} repintados solo de cursor; cursor: {} formas, {} posiciones",
             self.frames_presented,
             fps(self.frames_presented),
+            self.frames_presented_concealed,
             self.cursor_only_presents,
             self.cursor_shapes,
             self.cursor_positions
         );
+        println!(
+            "congelaciones (> {} ms sin frame nuevo): {}, {:.0} ms en total, la más larga {:.0} ms",
+            FREEZE_THRESHOLD.as_millis(),
+            self.freezes,
+            self.frozen_total.as_secs_f64() * 1e3,
+            self.longest_freeze.as_secs_f64() * 1e3
+        );
+        let n = self.episode_requests.len();
+        if n > 0 {
+            let mean = |v: &[u64]| v.iter().sum::<u64>() as f64 / v.len() as f64;
+            println!(
+                "episodios de pérdida cerrados: {n}{}; peticiones por episodio media {:.2} máx. {}; frames decodificados durante el episodio media {:.1} máx. {}",
+                if self.episode_open_at_end { " (+1 abierto al terminar)" } else { "" },
+                mean(&self.episode_requests),
+                self.episode_requests.iter().max().copied().unwrap_or(0),
+                mean(&self.episode_frames),
+                self.episode_frames.iter().max().copied().unwrap_or(0),
+            );
+        } else if self.episode_open_at_end {
+            println!("episodios de pérdida: 1 abierto al terminar, ninguno cerrado");
+        }
         if let Some(t) = self.first_frame {
             println!(
                 "primer frame decodificado: {:.1} ms tras crear el decodificador",
@@ -218,7 +320,10 @@ impl SessionStats {
         line("reensamblado→Present devuelto", &self.recv_to_present);
         line("Present() CPU", &self.present_cpu);
         line("Present()→vblank (DXGI stats)", &self.present_vblank);
-        line("recuperación (pérdida→IDR decodificado)", &self.recovery);
+        line(
+            "recuperación (1.ª pérdida→IDR decodificado)",
+            &self.recovery,
+        );
         if same_host {
             line(
                 "captura→Present devuelto (MISMO EQUIPO)",

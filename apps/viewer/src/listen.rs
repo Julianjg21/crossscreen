@@ -11,7 +11,9 @@
 
 use crate::decode_worker::{self, Worker};
 use crate::net::{self, NetConfig};
-use crate::session::{MailFrame, Mailbox, SessionStats, StartSession, UiCmd, UserEvent};
+use crate::session::{
+    LossPolicy, MailFrame, Mailbox, SessionStats, StartSession, UiCmd, UserEvent, FREEZE_THRESHOLD,
+};
 use crate::{clock, parse_size, save_png, Args};
 use anyhow::{anyhow, Context, Result};
 use cs_core::Mode;
@@ -86,6 +88,9 @@ struct Session {
     /// ocupa el hueco hasta el *vblank*).
     cursor_deadline: Option<Instant>,
     screenshot_done: bool,
+    /// Instante del último `Present` con un frame de vídeo nuevo (para
+    /// medir congelaciones).
+    last_video_present: Option<Instant>,
 }
 
 impl Session {
@@ -187,6 +192,7 @@ impl ListenApp {
             once: self.args.once,
             native_mode,
             dpi,
+            keyframe_policy: self.args.keyframe_policy,
         };
         self.net = Some(net::spawn(cfg, self.proxy.clone(), cmd_rx)?);
         self.net_cmd = Some(cmd_tx);
@@ -239,6 +245,11 @@ impl ListenApp {
             proxy: self.proxy.clone(),
             keyframe_tx: s.keyframe_tx,
             stats: s.stats.clone(),
+            policy: if self.args.freeze_on_loss {
+                LossPolicy::FreezeOnLoss
+            } else {
+                LossPolicy::DecodeThrough
+            },
         };
         let decode_thread = std::thread::Builder::new()
             .name("cs-decode".into())
@@ -263,6 +274,7 @@ impl ListenApp {
             // Primer repintado: muestra la ventana en negro.
             cursor_deadline: Some(Instant::now()),
             screenshot_done: false,
+            last_video_present: None,
         });
         Ok(())
     }
@@ -306,6 +318,7 @@ impl ListenApp {
     fn render_once(&mut self) -> Result<()> {
         let same_host = self.args.same_host_latency;
         let shot_frame = self.args.screenshot_frame;
+        let shot_concealed = self.args.screenshot_concealed;
         let shot_path = self.args.screenshot.clone();
         let Some(s) = self.session.as_mut() else {
             return Ok(());
@@ -332,7 +345,14 @@ impl ListenApp {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .frames_presented;
-        if is_new && !s.screenshot_done && presented_idx == shot_frame {
+        // Con `--screenshot-concealed`, el primer frame con referencias rotas
+        // a partir del número `--screenshot-frame` (para ver la ocultación).
+        let shot_now = if shot_concealed {
+            presented_idx >= shot_frame && s.current.as_ref().is_some_and(|m| m.concealed)
+        } else {
+            presented_idx == shot_frame
+        };
+        if is_new && !s.screenshot_done && shot_now {
             if let Some(path) = &shot_path {
                 let (w, h, rgba) = s.renderer.capture_rgba()?;
                 save_png(path, w, h, &rgba)?;
@@ -355,6 +375,18 @@ impl ListenApp {
         match s.current.as_ref().filter(|_| is_new) {
             Some(m) => {
                 st.frames_presented += 1;
+                if m.concealed {
+                    st.frames_presented_concealed += 1;
+                }
+                if let Some(prev) = s.last_video_present {
+                    let gap = now.duration_since(prev);
+                    if gap > FREEZE_THRESHOLD {
+                        st.freezes += 1;
+                        st.frozen_total += gap;
+                        st.longest_freeze = st.longest_freeze.max(gap);
+                    }
+                }
+                s.last_video_present = Some(now);
                 st.present.record(now.duration_since(m.decoded_at));
                 st.recv_to_present.record(now.duration_since(m.received_at));
                 if same_host {

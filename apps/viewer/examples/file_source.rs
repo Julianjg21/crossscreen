@@ -5,7 +5,10 @@
 //!
 //! Para probar la recuperación se pueden inducir pérdidas: `--loss P`
 //! descarta cada datagrama con probabilidad P; `--drop-every N` descarta
-//! todos los datagramas de uno de cada N frames. Ante `RequestKeyframe` el
+//! todos los datagramas de uno de cada N frames; `--ge-p/--ge-r/--ge-loss`
+//! activan un modelo de pérdidas **en ráfaga** de Gilbert-Elliott por
+//! datagrama (aproxima el Wi-Fi: casi siempre bien, de vez en cuando unos
+//! datagramas seguidos perdidos). `--seed` fija la semilla. Ante `RequestKeyframe` el
 //! «codificador» simulado salta al IDR más reciente del fichero (equivale a
 //! forzar un IDR: es un punto de acceso aleatorio limpio).
 //!
@@ -25,6 +28,7 @@ use cs_protocol::{ALPN, PROTOCOL_VERSION};
 use cs_security::identity::Identity;
 use cs_security::trust::TrustStore;
 use cs_security::verifier::PeerPolicy;
+use cs_transport::fec::{AdaptiveFec, AdaptiveFecConfig};
 use cs_transport::pacer::send_paced;
 use cs_transport::packetizer::FrameMeta;
 use cs_transport::{
@@ -57,8 +61,38 @@ struct Args {
     /// Descartar todos los datagramas de uno de cada N frames (0 = nunca).
     #[arg(long, default_value_t = 0)]
     drop_every: u32,
+    /// Gilbert-Elliott: probabilidad por datagrama de pasar de «bueno» a
+    /// «malo» (0 = modelo desactivado).
+    #[arg(long, default_value_t = 0.0)]
+    ge_p: f64,
+    /// Gilbert-Elliott: probabilidad por datagrama de volver de «malo» a
+    /// «bueno» (duración media de la ráfaga = 1/r datagramas).
+    #[arg(long, default_value_t = 0.25)]
+    ge_r: f64,
+    /// Gilbert-Elliott: probabilidad de perder un datagrama en estado «malo».
+    #[arg(long, default_value_t = 0.8)]
+    ge_loss: f64,
+    /// Semilla del generador de pérdidas (misma semilla = mismo proceso).
+    #[arg(long, default_value_t = 0x5eed)]
+    seed: u64,
     #[arg(long, default_value_t = 0.1)]
     fec: f32,
+    /// Paridad FEC separada para IDR (`None` = misma que `--fec`).
+    #[arg(long)]
+    keyframe_fec: Option<f32>,
+    /// Entrelazar shards entre bloques FEC de un mismo frame.
+    #[arg(long)]
+    interleave: bool,
+    /// Ajustar la paridad FEC según `ReceiverStats`.
+    #[arg(long)]
+    adaptive_fec: bool,
+    /// Coalescencia de `RequestKeyframe` en ms (0 = sin filtro). Con > 0
+    /// también ignora peticiones recibidas a menos de 1 RTT del último IDR.
+    #[arg(long, default_value_t = 0)]
+    coalesce_ms: u64,
+    /// Cota inferior de RTT simulado (ms) para la ventana de ignorar < 1 RTT.
+    #[arg(long, default_value_t = 0)]
+    sim_rtt_ms: u64,
     #[arg(long, default_value_t = 0.6)]
     pacing: f64,
 }
@@ -83,6 +117,31 @@ impl Lcg {
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1_442_695_040_888_963_407);
         (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Canal de Gilbert-Elliott de dos estados. Pérdida media esperada:
+/// `p / (p + r) · loss_bad`.
+struct GilbertElliott {
+    p: f64,
+    r: f64,
+    loss_bad: f64,
+    bad: bool,
+    bursts: u64,
+}
+
+impl GilbertElliott {
+    /// `true` si el datagrama se pierde.
+    fn drop(&mut self, rng: &mut Lcg) -> bool {
+        if self.bad {
+            if rng.next_f64() < self.r {
+                self.bad = false;
+            }
+        } else if rng.next_f64() < self.p {
+            self.bad = true;
+            self.bursts += 1;
+        }
+        self.bad && rng.next_f64() < self.loss_bad
     }
 }
 
@@ -236,13 +295,23 @@ async fn main() -> Result<()> {
     }
     println!("StreamStarted recibido");
 
-    let packetizer = Packetizer::new(
+    let mut packetizer = Packetizer::new(
         1,
         PacketizerConfig {
             max_datagram: conn.max_datagram_size().unwrap_or(1200),
             fec_ratio: args.fec,
         },
-    );
+    )
+    .with_keyframe_fec_ratio(args.keyframe_fec.unwrap_or(args.fec))
+    .with_interleave(args.interleave);
+    let mut adaptive_fec = args.adaptive_fec.then(|| {
+        AdaptiveFec::new(AdaptiveFecConfig {
+            initial: args.fec,
+            ..AdaptiveFecConfig::default()
+        })
+    });
+    let mut fec_changes = 0u32;
+    let mut fec_max = args.fec;
     let mut pacer = Pacer::new(PacerConfig {
         mode: PacingMode::Spread {
             fraction: args.pacing,
@@ -253,12 +322,41 @@ async fn main() -> Result<()> {
     // Reloj de frames con espera de alta resolución: `tokio::time` en Windows
     // tiene granularidad de ~15,6 ms y no llega a 60 fps estables.
     let mut next_frame = Instant::now();
-    let mut rng = Lcg(0x5eed);
+    let mut rng = Lcg(args.seed);
+    // Generador aparte para el canal: el proceso de pérdidas no depende de
+    // qué otros sorteos se hagan.
+    let mut ge_rng = Lcg(args.seed ^ 0x9e37_79b9_7f4a_7c15);
+    let mut ge = (args.ge_p > 0.0).then_some(GilbertElliott {
+        p: args.ge_p,
+        r: args.ge_r,
+        loss_bad: args.ge_loss,
+        bad: false,
+        bursts: 0,
+    });
+    if let Some(g) = &ge {
+        println!(
+            "Gilbert-Elliott p={} r={} pérdida en malo={}: pérdida media esperada {:.2} %, ráfaga media {:.1} datagramas",
+            g.p,
+            g.r,
+            g.loss_bad,
+            100.0 * g.p / (g.p + g.r) * g.loss_bad,
+            1.0 / g.r
+        );
+    }
     let t0 = Instant::now();
     let (mut idx, mut seq) = (0usize, 0u32);
-    let (mut forced, mut kf_requests, mut dropped_dg, mut dropped_frames, mut sent_dg) =
-        (0u32, 0u32, 0u64, 0u32, 0u64);
+    let (
+        mut forced,
+        mut kf_requests,
+        mut kf_ignored_rtt,
+        mut kf_coalesced,
+        mut dropped_dg,
+        mut dropped_frames,
+        mut sent_dg,
+    ) = (0u32, 0u32, 0u32, 0u32, 0u64, 0u32, 0u64);
     let mut want_idr = false;
+    let mut last_forced_at: Option<Instant> = None;
+    let mut deferred_idr_until: Option<Instant> = None;
     let mut shape_sent = 0;
     loop {
         tokio::select! {
@@ -280,15 +378,27 @@ async fn main() -> Result<()> {
                 let (cx, cy) = (960.0 + 400.0 * (t * 1.5).cos(), 540.0 + 300.0 * (t * 1.5).sin());
                 ctl.send(&ControlMessage::CursorPosition { stream_id: 1, x: cx as i32, y: cy as i32, visible: true }).await?;
 
+                let now = Instant::now();
+                if deferred_idr_until.is_some_and(|due| now >= due) {
+                    deferred_idr_until = None;
+                    want_idr = true;
+                }
                 if want_idr {
+                    // El fichero no permite forzar un IDR nuevo: se salta al
+                    // IDR más reciente (la imagen retrocede, pero es un punto
+                    // de acceso limpio y del tamaño de un IDR real).
                     let pos = idx % aus.len();
                     let base = idx - pos;
                     let last = idrs.iter().rev().find(|&&i| i <= pos).copied().unwrap_or(0);
                     idx = base + last;
                     forced += 1;
+                    last_forced_at = Some(now);
                     want_idr = false;
                 }
                 let au = &aus[idx % aus.len()];
+                if is_idr(au) && last_forced_at.is_none() {
+                    last_forced_at = Some(now);
+                }
                 let meta = FrameMeta { frame_seq: seq, pts_us: qpc_us32(), keyframe: is_idr(au), discardable: false };
                 let dgs = packetizer.packetize(meta, au).map_err(|e| anyhow!("packetize: {e:?}"))?;
                 let drop_frame = args.drop_every > 0 && seq % args.drop_every == args.drop_every - 1;
@@ -298,7 +408,10 @@ async fn main() -> Result<()> {
                 let kept: Vec<Bytes> = dgs
                     .into_iter()
                     .filter(|_| {
-                        let drop = drop_frame || (args.loss > 0.0 && rng.next_f64() < args.loss);
+                        let burst = ge.as_mut().is_some_and(|g| g.drop(&mut ge_rng));
+                        let drop = burst
+                            || drop_frame
+                            || (args.loss > 0.0 && rng.next_f64() < args.loss);
                         if drop {
                             dropped_dg += 1;
                         }
@@ -317,9 +430,42 @@ async fn main() -> Result<()> {
             m = ctl.recv::<ControlMessage>() => match m? {
                 Some(ControlMessage::RequestKeyframe { .. }) => {
                     kf_requests += 1;
-                    want_idr = true;
+                    if args.coalesce_ms == 0 {
+                        want_idr = true;
+                    } else {
+                        let now = Instant::now();
+                        let rtt = conn.rtt().max(Duration::from_millis(args.sim_rtt_ms)).min(Duration::from_millis(500));
+                        let min_interval = Duration::from_millis(args.coalesce_ms);
+                        match last_forced_at {
+                            Some(last) if now.saturating_duration_since(last) < rtt => {
+                                kf_ignored_rtt += 1;
+                            }
+                            Some(last) if now.saturating_duration_since(last) < min_interval => {
+                                kf_coalesced += 1;
+                                deferred_idr_until.get_or_insert(last + min_interval);
+                            }
+                            _ => {
+                                deferred_idr_until = None;
+                                want_idr = true;
+                            }
+                        }
+                    }
                 }
-                Some(ControlMessage::ReceiverStats(s)) => println!("ReceiverStats: {s:?}"),
+                Some(ControlMessage::ReceiverStats(s)) => {
+                    println!("ReceiverStats: {s:?}");
+                    if let Some(af) = adaptive_fec.as_mut() {
+                        if let Some(ch) = af.on_stats(
+                            s.frames_received,
+                            s.frames_lost,
+                            s.pre_fec_loss_bp,
+                        ) {
+                            packetizer.set_fec_ratio(ch.to);
+                            fec_changes += 1;
+                            fec_max = fec_max.max(ch.to);
+                            println!("AdaptiveFec: {:.2} -> {:.2} ({:?})", ch.from, ch.to, ch.reason);
+                        }
+                    }
+                }
                 Some(ControlMessage::Bye { reason }) => {
                     println!("Bye del visor: {reason:?}");
                     break;
@@ -338,9 +484,17 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
     conn.close(b"bye");
     endpoint.close();
+    let total_dg = sent_dg + dropped_dg;
     println!(
-        "file_source: {seq} frames enviados en {:.1} s, {sent_dg} datagramas, {dropped_dg} descartados a propósito ({dropped_frames} frames enteros), {kf_requests} RequestKeyframe recibidos, {forced} IDR forzados",
-        t0.elapsed().as_secs_f64()
+        "pérdida efectiva: {dropped_dg}/{total_dg} datagramas ({:.2} %), {} ráfagas Gilbert-Elliott",
+        100.0 * dropped_dg as f64 / total_dg.max(1) as f64,
+        ge.as_ref().map_or(0, |g| g.bursts)
+    );
+    println!(
+        "file_source: {seq} frames enviados en {:.1} s, {sent_dg} datagramas, {dropped_dg} descartados a propósito ({dropped_frames} frames enteros), {kf_requests} RequestKeyframe recibidos ({kf_ignored_rtt} ignorados <1 RTT, {kf_coalesced} coalescidos), {forced} IDR forzados, FEC final {:.2} (máx {:.2}, {fec_changes} ajustes)",
+        t0.elapsed().as_secs_f64(),
+        packetizer.config().fec_ratio,
+        fec_max
     );
     Ok(())
 }
