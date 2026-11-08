@@ -5,17 +5,17 @@
 > - Al terminar tu sesión, actualiza "Trabajo en curso", "Próximos pasos" y añade una línea a la **Bitácora**: fecha, quién, qué se hizo y qué quedó a medias.
 > - Las reglas permanentes están en [`AGENTS.md`](../AGENTS.md).
 
-**Última actualización:** 2026-11-08, integración de resiliencia en Wi-Fi (`v0.0.1-alpha.2`).
+**Última actualización:** 2026-11-08, validación en Wi-Fi real entre `PC-A` y `PC-B` y corrección de *pacing*, CBR adaptativo por resolución y cursor a 125 Hz (`v0.0.1-alpha.3`).
 
 ## Resumen en una frase
-La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **con resiliencia ante pérdidas en ráfaga (FEC adaptativo + entrelazado de bloques + paridad del 50 % en IDR + decodificación a través de pérdidas + política calmada de `RequestKeyframe`) integrada, medida y publicada en `v0.0.1-alpha.2`**.
+La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **validada y afinada sobre Wi-Fi real entre dos equipos (60 s a `1366×768@60`: pérdidas reducidas de 31 a 2 frames, peticiones `RequestKeyframe` de 104 a 1, cursor de 638 a 3 040 posiciones y `Captura→enviado` p50 18,1 / p95 25,6 / máx. 53,2 ms)**.
 
 ## Fases (ver `docs/07-roadmap.md`)
 | Fase | Estado |
 |---|---|
 | F0 Fundamentos | ✅ En lo esencial (CI y release funcionando en GitHub) |
-| F1 PoC (Windows) | ✅ PoC-1, 2, 3 y 5; PoC-4 en loopback + primera prueba real |
-| F2 MVP Windows → Windows | 🟡 Funciona; resiliencia ante ráfagas integrada (`v0.0.1-alpha.2`), falta repetir la prueba real en Wi-Fi y por cable, estabilidad de 2 h e integración en agente/panel |
+| F1 PoC (Windows) | ✅ PoC-1, 2, 3 y 5; PoC-4 en loopback + pruebas reales Wi-Fi |
+| F2 MVP Windows → Windows | 🟡 Funciona y es estable en Wi-Fi real (`PC-A → PC-B`); falta prueba por cable, estabilidad de 2 h e integración en agente/panel |
 | F3 Extender en Windows | 🟡 Adelantada (VDD + CCD funcionando) |
 | F4 Linux | ⏳ No iniciada (no hay equipo Linux para probar) |
 
@@ -54,29 +54,32 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
   - Peticiones `RequestKeyframe`: de **94–144** a **12** (**-87 % a -92 %**, exactamente 1,00 por episodio, recuperadas en **18,1 ms p50 / 22,1 ms máx.**).
   - Congelaciones (> 200 ms): de **3 congelaciones (867 ms total, máx. 367 ms)** y 217 frames descartados a **0 congelaciones (0 ms)** y **853 frames presentados (56,8 fps)** frente a 545 (36,3 fps).
 - **Verificación de `CODECAPI_AVEncVideoGradualIntraRefresh` en el MFT de Intel:** acepta `1` y `0x00010001` en `SetValue`/`GetValue`, pero las 120/120 unidades de acceso generadas son **100 % idénticas byte a byte** a `None (0)` (no-op total en el wrapper MFT de Intel).
+- **Validación y afinado en Wi-Fi real (`PC-A → PC-B`, 60 s, `1366×768@60`):**
+  - **Frames perdidos post-FEC:** de **31** (`v0.0.1-alpha.1`) y **19** (`v0.0.1-alpha.2`) a **2** (**0,11 %** de 1 781 frames, **0 frames perdidos sin ningún datagrama**).
+  - **Peticiones `RequestKeyframe`:** de **104** a **1** en 60 s (**1,00 por episodio**, 0 por espera vencida, 0 frames descartados esperando IDR).
+  - **Latencia y estabilidad de envío:** corregido el cálculo de `paced = total - avail` y `set_rate_at` en `Pacer::schedule` (antes un frame apenas por encima de `burst_bytes` con *bucket* vacío se programaba a ~14 s vista), escalado el objetivo CBR por defecto según área (`8 094 kbps` en `1366×768`, P-frames de `40,3 → 16,4 KiB`, IDR de `103,0 → 31,3 KiB`) y acotado el ritmo máximo de `Spread`; `Captura→enviado (QPC)` queda en **p50 18,13 / p95 25,62 / máx. 53,18 ms** y *jitter* en **10,7 ms** (-73 %).
+  - **Fluidez del cursor:** sondeo Win32 (`GetPhysicalCursorPos` + `GetCursorInfo`) a **125 Hz** independiente del codificador, retorno inmediato en `DxgiCapture::next_frame` ante eventos de puntero y deduplicación de `CursorShape`, subiendo de **638** posiciones (`10,6 Hz`) a **3 040** (`50,7 Hz`) y **846–1 122** repintados solo de cursor.
 
 ## Trabajo en curso (2026-11-08)
-Ninguno pendiente en el árbol de trabajo: las mejoras de resiliencia del receptor y del emisor quedaron integradas, probadas y etiquetadas en **`v0.0.1-alpha.2`**.
+Ninguno pendiente en el árbol de trabajo: la validación en Wi-Fi real y las correcciones de *pacing*, CBR adaptativo por resolución, decodificador y cursor a 125 Hz están integradas y documentadas.
 
 ## Próximos pasos (en orden)
-1. Descargar el `.zip` de **`v0.0.1-alpha.2`** en `PC-B` (`DESKTOP-93VFE2P`) y repetir la prueba real A → B por Wi-Fi para confirmar la mejora sobre el enlace real.
-2. Probar **por cable** para separar los problemas del Wi-Fi de los del programa.
-3. Pedir al dueño que desactive el ahorro de energía del Wi-Fi en los dos equipos y volver a medir.
-4. Integrar el streaming en `crossscreen-agent` y en el panel Tauri (botón "Transmitir pantalla"; hoy está como "Próximamente").
-5. **Latencia:**
-   - visor a pantalla completa (en ventana, `Present()` → *vblank* ≈ 33 ms);
+1. Integrar el streaming en `crossscreen-agent` y en el panel Tauri (botón "Transmitir pantalla"; hoy está como "Próximamente").
+2. Probar **por cable** para separar la latencia de red del Wi-Fi de la del pipeline.
+3. Desactivar el ahorro de energía del Wi-Fi en los dos equipos para reducir los picos ocasionales de RTT (120–236 ms).
+4. **Latencia:**
    - codificador más rápido (oneVPL/QSV directo; NVENC/AMF en otro hardware);
-   - control de tasa (el MFT de Intel ignora el cambio de bitrate en caliente).
-6. Prueba de estabilidad de 2 h; suspensión/reanudación con el monitor extendido.
-7. **Linux (F4):** primero el receptor (VAAPI + wgpu), luego la fuente (Mutter/KWin/wlroots/EVDI + PipeWire). Requiere un equipo Linux real.
+   - control de tasa dinámico (el MFT de Intel ignora el cambio de bitrate en caliente).
+5. Prueba de estabilidad de 2 h; suspensión/reanudación con el monitor extendido.
+6. **Linux (F4):** primero el receptor (VAAPI + wgpu), luego la fuente (Mutter/KWin/wlroots/EVDI + PipeWire). Requiere un equipo Linux real.
 
 ## Problemas conocidos y decisiones vigentes
 - **VDD:** no usar su tubería. Modos y cantidad de monitores se cambian con el helper (XML + `pnputil /restart-device`, admin); mostrar y retirar con CCD (sin admin). Windows pone cada monitor nuevo en *duplicar*.
 - **Codificador MF de Intel:**
   - necesita `timeBeginPeriod(1)` y excluir el proceso de la limitación de energía;
   - ignora el cambio de bitrate en caliente y también `CODECAPI_AVEncVideoGradualIntraRefresh` (ambos devuelven `S_OK` pero no alteran el flujo H.264);
-  - CBR rellena cada frame (~40 KB a 20 Mbps).
-- **Visor:** D3D11 directo en Windows (no wgpu), sin copias; por defecto decodifica a través de pérdidas (`DecodeThrough`) y usa `KeyframeRequester` calmado (`Calm`).
+  - CBR rellena cada frame (~40 KB a 20 Mbps; se escala automáticamente a ~8,1 Mbps para `1366×768`, dejando los P-frames en ~16,4 KiB).
+- **Visor:** D3D11 directo en Windows (no wgpu), sin copias; por defecto decodifica a través de pérdidas (`DecodeThrough`), usa `KeyframeRequester` calmado (`Calm`) e inicializa `MF_MT_FRAME_SIZE` con el modo de `StartStream`.
 - **Captura:** una sola duplicación por monitor y por proceso; el nombre GDI (`\\.\DISPLAYn`) cambia, así que hay que buscarlo siempre con `cs-display`.
 - **El IPC de Linux y todo lo de Linux** compila (solo los crates portables), pero nunca se ha ejecutado en un Linux real.
 - **Clave privada:** DPAPI en Windows; en Linux un archivo 0600 (Secret Service pendiente).
@@ -92,3 +95,4 @@ Ninguno pendiente en el árbol de trabajo: las mejoras de resiliencia del recept
 | 2026-11-08 | Coordinador | Repo en GitHub, CI en verde, release `v0.0.1-alpha.1`; revocación de pares en caliente en el visor. |
 | 2026-11-08 | Dueño + coordinador | **Primera prueba real A → B por Wi-Fi:** funciona, pero con lag y congelaciones por pérdidas en ráfaga. Lanzados 2 agentes de resiliencia (ver "Trabajo en curso"). |
 | 2026-11-08 | Agente integrador | Integración de resiliencia Wi-Fi en receptor (`DecodeThrough`, `KeyframeRequester` calmado, `SeqTracker::note_lost`) y emisor/transporte (FEC IDR 0,5, entrelazado de bloques, `AdaptiveFec`, filtro `<1 RTT`, inyector Gilbert-Elliott y sonda `GradualIntraRefresh`); mediciones documentadas y release `v0.0.1-alpha.2`. |
+| 2026-11-08 | Dueño + agente | **Validación en Wi-Fi real (`PC-A → PC-B`, 60 s, `1366×768@60`):** corregido bloqueo de *pacing* (`paced = total - avail` y `set_rate_at`), escalado CBR por resolución (`8 094 kbps`), tope de ritmo para IDR, sondeo Win32 del cursor a 125 Hz + deduplicación de formas y tamaño inicial en `VideoDecoder`; pérdidas bajan de 31 a 2 frames y `RequestKeyframe` de 104 a 1. |

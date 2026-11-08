@@ -240,6 +240,7 @@ impl ListenApp {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let worker = Worker {
             device: self.device.clone(),
+            initial_size: Some((s.display_mode.width, s.display_mode.height)),
             input: s.decode_rx,
             mailbox: mailbox.clone(),
             proxy: self.proxy.clone(),

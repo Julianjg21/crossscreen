@@ -18,8 +18,8 @@ use super::priority::ThreadPriorityGuard;
 use crate::cursor::{hotspot_position, shape_to_message};
 use crate::stats::WorkerStats;
 use crate::timing::PtsClock;
-use cs_capture::windows_dxgi::{qpc_now_us, D3D11Texture, DxgiCapture};
-use cs_capture::{CaptureConfig, CaptureError, CaptureSource, CaptureTarget};
+use cs_capture::windows_dxgi::{poll_cursor_in_rect, qpc_now_us, D3D11Texture, DxgiCapture};
+use cs_capture::{CaptureConfig, CaptureError, CaptureSource, CaptureTarget, Rect};
 use cs_encode::mf::{InputFrame, MfH264Encoder};
 use cs_encode::{EncodeControl, EncoderConfig, VideoEncoder};
 use cs_protocol::control::{CursorShape, StreamId};
@@ -71,6 +71,7 @@ pub struct WorkerOutputs {
     pub video: mpsc::Sender<VideoUnit>,
     pub cursor_pos: watch::Sender<Option<CursorPos>>,
     pub cursor_shape: watch::Sender<Option<Arc<CursorShape>>>,
+    pub desktop_rect: watch::Sender<Option<Rect>>,
 }
 
 /// Resultado del arranque: tamaño de la salida capturada.
@@ -116,6 +117,7 @@ struct Worker {
     last_encode_at: Instant,
     shape_gen: u64,
     pos_gen: u64,
+    last_shape: Option<Arc<CursorShape>>,
 }
 
 /// Errores seguidos del codificador antes de recrearlo, y antes de rendirse.
@@ -164,6 +166,7 @@ impl Worker {
             last_encode_at: Instant::now(),
             shape_gen: 0,
             pos_gen: 0,
+            last_shape: None,
         };
         let mut cap = match open_capture(&w.params.target, &w.ctl.stop) {
             Ok(c) => c,
@@ -179,6 +182,7 @@ impl Worker {
             .map(|d| (d.width, d.height))
             .unwrap_or((0, 0));
         tracing::info!(output = ?cap.output(), info = ?cap.duplication_info(), "captura abierta");
+        let _ = w.out.desktop_rect.send(Some(cap.output().desktop_rect));
         // Crear el codificador ya, para que un fallo se informe antes de
         // empezar la sesión y no con el primer frame.
         if size.0 > 0 {
@@ -222,10 +226,11 @@ impl Worker {
                 Ok(None) => match &last_tex {
                     Some((tex, size, generation)) if streaming => {
                         let idr = w.ctl.force_idr.load(Ordering::Relaxed) || w.need_idr;
-                        let refresh = w
-                            .params
-                            .static_refresh
-                            .is_some_and(|r| w.last_encode_at.elapsed() >= r);
+                        let channel_idle = w.out.video.capacity() >= w.out.video.max_capacity();
+                        let refresh = channel_idle
+                            && w.params
+                                .static_refresh
+                                .is_some_and(|r| w.last_encode_at.elapsed() >= r);
                         if idr || refresh {
                             w.st.repeats += 1;
                             let pts = clock.next(0, qpc_now_us());
@@ -303,9 +308,17 @@ impl Worker {
         device_generation: u32,
         pts_us: u64,
     ) -> Result<(), String> {
-        // Contrapresión: si la unidad anterior aún no salió hacia la red, no
-        // codificar este frame (descartarlo aquí no rompe las referencias).
-        if self.out.video.capacity() == 0 {
+        // Contrapresión: para P-frames normales exigimos que el canal (cap. 2)
+        // esté vacío (`capacity() >= 2`), de modo que no se acumule cola; un
+        // IDR forzado puede usar la plaza de reserva (`capacity() >= 1`) para
+        // no retrasar la recuperación ante pérdidas.
+        let want_idr = self.need_idr || self.ctl.force_idr.load(Ordering::Relaxed);
+        let min_cap = if want_idr {
+            1
+        } else {
+            self.out.video.max_capacity()
+        };
+        if self.out.video.capacity() < min_cap {
             self.st.dropped_backpressure += 1;
             return Ok(());
         }
@@ -335,10 +348,11 @@ impl Worker {
             Ok(units) => {
                 self.consecutive_errors = 0;
                 self.last_encode_at = Instant::now();
-                if force && !units.is_empty() {
+                let emitted_idr = units.iter().any(|u| u.keyframe);
+                if force && emitted_idr {
                     self.need_idr = false;
                 } else if force {
-                    // La salida llegará tarde: mantener la petición.
+                    // El MFT aún no entregó un IDR: mantener la petición para el siguiente frame.
                     self.ctl.force_idr.store(true, Ordering::Relaxed);
                     self.need_idr = false;
                 }
@@ -394,6 +408,21 @@ impl Worker {
     }
 
     fn publish_cursor(&mut self, cap: &DxgiCapture) {
+        let rect = cap.output().desktop_rect;
+        self.out.desktop_rect.send_if_modified(|old| {
+            let changed = *old != Some(rect);
+            *old = Some(rect);
+            changed
+        });
+        let polled = poll_cursor_in_rect(rect);
+        if let Some((x, y, visible)) = polled {
+            let p = CursorPos { x, y, visible };
+            self.out.cursor_pos.send_if_modified(|old| {
+                let changed = *old != Some(p);
+                *old = Some(p);
+                changed
+            });
+        }
         let cur = cap.cursor();
         let shape_changed = cur.shape_generation != self.shape_gen;
         if shape_changed {
@@ -403,23 +432,30 @@ impl Worker {
                 .as_ref()
                 .and_then(|s| shape_to_message(s, self.params.stream_id))
             {
-                self.out.cursor_shape.send_replace(Some(Arc::new(m)));
+                let identical = self.last_shape.as_deref() == Some(&m);
+                if !identical {
+                    let arc = Arc::new(m);
+                    self.last_shape = Some(arc.clone());
+                    self.out.cursor_shape.send_replace(Some(arc));
+                }
             }
         }
         if cur.position_generation != self.pos_gen || shape_changed {
             self.pos_gen = cur.position_generation;
-            if let Some(tl) = cur.position {
-                let (x, y) = hotspot_position(tl, cur.shape.as_ref());
-                let p = CursorPos {
-                    x,
-                    y,
-                    visible: cur.visible,
-                };
-                self.out.cursor_pos.send_if_modified(|old| {
-                    let changed = *old != Some(p);
-                    *old = Some(p);
-                    changed
-                });
+            if polled.is_none() {
+                if let Some(tl) = cur.position {
+                    let (x, y) = hotspot_position(tl, cur.shape.as_ref());
+                    let p = CursorPos {
+                        x,
+                        y,
+                        visible: cur.visible,
+                    };
+                    self.out.cursor_pos.send_if_modified(|old| {
+                        let changed = *old != Some(p);
+                        *old = Some(p);
+                        changed
+                    });
+                }
             }
         }
     }

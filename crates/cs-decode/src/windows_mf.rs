@@ -162,6 +162,14 @@ impl VideoDecoder {
     /// Crea el decodificador sobre `device` (que debe venir de
     /// [`create_d3d11_device`] o tener `VIDEO_SUPPORT` y protección multihilo).
     pub fn new(device: &ID3D11Device) -> Result<Self> {
+        Self::new_with_size(device, None)
+    }
+
+    /// Igual que [`Self::new`], pero fija un tamaño inicial (`MF_MT_FRAME_SIZE`)
+    /// en el tipo de entrada para que `CLSID_CMSH264DecoderMFT` no reserve
+    /// primero superficies 1920×1080 por defecto y sufra una parada de ~450 ms
+    /// (`MF_E_TRANSFORM_STREAM_CHANGE`) al llegar el primer IDR de otro tamaño.
+    pub fn new_with_size(device: &ID3D11Device, initial_size: Option<(u32, u32)>) -> Result<Self> {
         ensure_mf_started()?;
         // SAFETY: todas las llamadas COM de este bloque reciben interfaces
         // válidas y punteros de salida locales.
@@ -223,6 +231,11 @@ impl VideoDecoder {
             in_type
                 .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
                 .ctx("SetUINT32(interlace)")?;
+            if let Some((w, h)) = initial_size.filter(|&(w, h)| w > 0 && h > 0) {
+                in_type
+                    .SetUINT64(&MF_MT_FRAME_SIZE, ((u64::from(w)) << 32) | u64::from(h))
+                    .ctx("SetUINT64(frame_size)")?;
+            }
             mft.SetInputType(0, &in_type, 0)
                 .ctx("IMFTransform::SetInputType")?;
 

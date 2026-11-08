@@ -8,8 +8,8 @@ use crate::win::worker::{self, CursorPos, VideoUnit, WorkerControl, WorkerOutput
 use crate::{SenderConfig, STREAM_ID};
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use cs_capture::windows_dxgi::{list_outputs, qpc_now_us};
-use cs_capture::CaptureTarget;
+use cs_capture::windows_dxgi::{list_outputs, poll_cursor_in_rect, qpc_now_us};
+use cs_capture::{CaptureTarget, Rect};
 use cs_core::{Codec, Mode, Roles, StreamMode};
 use cs_protocol::control::{
     ByeReason, ControlMessage, CursorShape, Hello, SinkCapabilities, StartStream,
@@ -180,11 +180,16 @@ pub(crate) async fn run(
         }
     };
     let fps = ((display_mode.refresh_mhz + 500) / 1000).max(1);
+    let mut cfg = cfg;
+    cfg.bitrate_kbps = effective_bitrate_kbps(cfg.bitrate_kbps, display_mode);
 
     // Hilo de captura + codificación (arranca ya; codifica tras StreamStarted).
-    let (video_tx, video_rx) = mpsc::channel::<VideoUnit>(1);
+    // Capacidad 2: la segunda plaza se reserva para IDR forzados, mientras que
+    // los P-frames siguen limitados a 1 en vuelo.
+    let (video_tx, video_rx) = mpsc::channel::<VideoUnit>(2);
     let (pos_tx, mut pos_rx) = watch::channel::<Option<CursorPos>>(None);
     let (shape_tx, mut shape_rx) = watch::channel::<Option<Arc<CursorShape>>>(None);
+    let (rect_tx, rect_rx) = watch::channel::<Option<Rect>>(None);
     let wctl = Arc::new(WorkerControl::default());
     let (join, ready, mut worker_done) = worker::spawn(
         WorkerParams {
@@ -197,8 +202,9 @@ pub(crate) async fn run(
         },
         WorkerOutputs {
             video: video_tx,
-            cursor_pos: pos_tx,
+            cursor_pos: pos_tx.clone(),
             cursor_shape: shape_tx,
+            desktop_rect: rect_tx,
         },
         wctl.clone(),
     )?;
@@ -317,6 +323,11 @@ pub(crate) async fn run(
     coalescer.note_forced(start);
     let deadline = cfg.duration.map(|d| tokio::time::Instant::now() + d);
     let mut shutdown = shutdown;
+    // Sondeo Win32 del cursor a 125 Hz (8 ms): mantiene el cursor fluido
+    // aunque el hilo de captura esté bloqueado en `MfH264Encoder::encode` o
+    // el monitor virtual no dispare eventos DXGI de puntero.
+    let mut cursor_tick = tokio::time::interval(Duration::from_millis(8));
+    cursor_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Enviar el estado inicial del cursor si ya lo hay.
     pos_rx.mark_changed();
     shape_rx.mark_changed();
@@ -337,6 +348,18 @@ pub(crate) async fn run(
                 if coalescer.poll(Instant::now()) {
                     wctl.force_idr.store(true, Ordering::Relaxed);
                     cs.keyframes_forced += 1;
+                }
+            }
+            _ = cursor_tick.tick() => {
+                if let Some(rect) = *rect_rx.borrow() {
+                    if let Some((x, y, visible)) = poll_cursor_in_rect(rect) {
+                        let p = CursorPos { x, y, visible };
+                        pos_tx.send_if_modified(|old| {
+                            let changed = *old != Some(p);
+                            *old = Some(p);
+                            changed
+                        });
+                    }
                 }
             }
             _ = &mut worker_done => break "fallo en captura/codificación".into(),
@@ -465,6 +488,20 @@ pub(crate) async fn run(
     })
 }
 
+/// Escala la tasa CBR por defecto (20 Mbps para 1080p60) según los píxeles
+/// reales del modo cuando es menor que 1080p, para que el codificador en modo
+/// CBR no rellene cada P-frame a ~40 KiB ni cada IDR a ~100 KiB en pantallas
+/// 1366×768 sobre Wi-Fi.
+fn effective_bitrate_kbps(configured_kbps: u32, mode: Mode) -> u32 {
+    const REF_PIXELS: u64 = 1920 * 1080;
+    let pixels = u64::from(mode.width) * u64::from(mode.height);
+    if configured_kbps == 20_000 && pixels > 0 && pixels < REF_PIXELS {
+        ((16_000 * pixels / REF_PIXELS) as u32).clamp(4_000, configured_kbps)
+    } else {
+        configured_kbps
+    }
+}
+
 async fn sleep_opt(at: Option<tokio::time::Instant>) {
     match at {
         Some(t) => tokio::time::sleep_until(t).await,
@@ -494,10 +531,14 @@ async fn video_task(
     )
     .with_keyframe_fec_ratio(cfg.keyframe_fec_ratio)
     .with_interleave(cfg.fec_interleave);
+    // Tope de ritmo para `Spread`: evita que un IDR con 50 % de FEC explote a
+    // >100 Mbps en 10 ms y desborde la cola del Wi-Fi.
+    let max_rate_bps = (f64::from(cfg.bitrate_kbps) * 1000.0 / 8.0 * 2.2).max(2_500_000.0);
     let mut pacer = Pacer::new(PacerConfig {
         mode: cfg.pacing,
         burst_bytes: 4 * max_dg,
-    });
+    })
+    .with_max_rate(max_rate_bps);
     let opts = PacedSendOptions {
         wait: cfg.pacing_wait,
         ..PacedSendOptions::default()

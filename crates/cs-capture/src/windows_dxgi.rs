@@ -24,7 +24,7 @@ use crate::{
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::{Interface, HRESULT};
-use windows::Win32::Foundation::{BOOL, E_ACCESSDENIED, E_INVALIDARG, HMODULE, LUID, RECT};
+use windows::Win32::Foundation::{BOOL, E_ACCESSDENIED, E_INVALIDARG, HMODULE, LUID, POINT, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -32,6 +32,9 @@ use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::UI::HiDpi::{
     SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorInfo, GetPhysicalCursorPos, CURSORINFO, CURSOR_SHOWING,
 };
 
 fn os(call: &'static str, e: &windows::core::Error) -> CaptureError {
@@ -78,6 +81,38 @@ fn qpc_freq() -> i64 {
     // SAFETY: puntero a i64 válido.
     let _ = unsafe { QueryPerformanceFrequency(&mut f) };
     f
+}
+
+/// Consulta rápida (Win32) de la posición física del cursor (*hotspot*)
+/// relativa al `desktop_rect` del monitor capturado.
+///
+/// Devuelve `Some((x, y, visible))` donde:
+/// - `visible = true` si el cursor está visible en el sistema y dentro de
+///   `desktop_rect` (con `x, y` en `[0, width) × [0, height)`);
+/// - `visible = false` si el cursor está oculto o en otro monitor.
+///
+/// No toca D3D11 ni `IDXGIOutputDuplication`, por lo que puede invocarse a
+/// 120–250 Hz desde cualquier hilo aunque el codificador esté ocupado o el
+/// monitor virtual no dispare eventos DXGI de puntero.
+pub fn poll_cursor_in_rect(desktop_rect: Rect) -> Option<(i32, i32, bool)> {
+    let mut pt = POINT::default();
+    // SAFETY: puntero a POINT local válido.
+    unsafe { GetPhysicalCursorPos(&mut pt) }.ok()?;
+    let mut ci = CURSORINFO {
+        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: estructura CURSORINFO con cbSize inicializado.
+    let showing = unsafe { GetCursorInfo(&mut ci) }.is_ok() && (ci.flags.0 & CURSOR_SHOWING.0) != 0;
+    let inside = pt.x >= desktop_rect.left
+        && pt.x < desktop_rect.right
+        && pt.y >= desktop_rect.top
+        && pt.y < desktop_rect.bottom;
+    if showing && inside {
+        Some((pt.x - desktop_rect.left, pt.y - desktop_rect.top, true))
+    } else {
+        Some((0, 0, false))
+    }
 }
 
 /// Errores tras los que tiene sentido reintentar la duplicación: la salida
@@ -764,7 +799,8 @@ impl CaptureSource for DxgiCapture {
             self.update_cursor(&dupl, &info);
 
             if info.LastPresentTime == 0 || resource.is_none() {
-                // Solo cambió el cursor: no hay imagen nueva.
+                // Solo cambió el cursor: devolver enseguida para publicar
+                // posición/forma sin esperar a que venza `timeout`.
                 self.stats.pointer_only_updates += 1;
                 drop(resource);
                 // SAFETY: hay un frame adquirido que liberar.
@@ -773,11 +809,7 @@ impl CaptureSource for DxgiCapture {
                         self.mark_lost();
                     }
                 }
-                if Instant::now() >= deadline {
-                    self.stats.timeouts += 1;
-                    return Ok(None);
-                }
-                continue;
+                return Ok(None);
             }
 
             let update = self.read_metadata(&dupl, &info);

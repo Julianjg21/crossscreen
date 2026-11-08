@@ -216,6 +216,38 @@ Resumen del impacto:
 - Los **frames perdidos post-FEC bajan un 90,3 %** (de 144 a **14 frames en 15 s**; una vez `AdaptiveFec` alcanza `0,50` en el segundo 4, solo se pierden 4 frames en los 11 segundos restantes).
 - Los **IDR forzados caen un 89,5 %** (de 114 a **12**) y todos los episodios se recuperan a la primera en **17–18 ms p50 (< 24 ms máx.)**, frente a colas de hasta 150 ms cuando los propios IDR se perdían en las ráfagas.
 
+### Pruebas reales en Wi-Fi entre dos equipos (`PC-A` → `PC-B`, 60 s, `1366×768@60`)
+
+Al probar `v0.0.1-alpha.2` sobre el enlace Wi-Fi real (`DESKTOP-6K2V76S` → `DESKTOP-93VFE2P`, `1366×768@60`), la tormenta de `RequestKeyframe` bajó de 104 a 4, pero aparecieron cuatro cuellos de botella adicionales que se diagnosticaron y corrigieron en la misma sesión:
+
+1. **Cursor a `10,6 Hz` (`638` posiciones en 60 s) y con saltos:**
+   - `DxgiCapture::next_frame` hacía `continue` al recibir actualizaciones de solo puntero (`LastPresentTime == 0`) hasta agotar los `16,67 ms` del *timeout*, y el hilo no podía consultar el cursor mientras `MfH264Encoder::encode` tardaba `7–52 ms`.
+   - **Corrección:** `next_frame` devuelve `Ok(None)` de inmediato en actualizaciones de puntero; se añadió `cs_capture::windows_dxgi::poll_cursor_in_rect` (`GetPhysicalCursorPos` + `GetCursorInfo`) sondeado cada **8 ms (125 Hz)** desde `session.rs` con independencia del codificador, y se deduplican los `CursorShape` idénticos.
+2. **Relleno CBR de 20 Mbps en `1366×768` y micro-ráfagas de 124 Mbps en los IDR:**
+   - Con `20 000 kbps` CBR sobre `1366×768`, el MFT de Intel rellenaba cada P-frame a `40,3 KiB` y cada IDR a `103,0 KiB` (`155 KiB` con 50 % de FEC), que `Spread { fraction: 0.6 }` inyectaba en `10 ms` (**124 Mbps**), desbordando la cola Wi-Fi (`15 frames perdidos sin ningún datagrama`, incluido el primer IDR forzado).
+   - **Corrección:** `effective_bitrate_kbps` escala el objetivo CBR por defecto según el área respecto a `1920×1080` (`8 094 kbps` en `1366×768`, bajando los P-frames a `16,4 KiB` y los IDR a `25–31 KiB`) y `Pacer::with_max_rate` acota el ritmo máximo de `Spread` a `2,2 × bitrate`.
+3. **Bloqueo de hasta 14 s en `Pacer::schedule` cuando un frame superaba `burst_bytes` por pocos bytes:**
+   - `Pacer::schedule` restaba `capacity` (`4 648 B`) en vez del saldo real `avail` del *token bucket* y llamaba a `set_rate` antes de acreditar los tokens acumulados. Un frame de ~`4 650 B` tras un *bucket* vacío daba `paced = 2 B` (`rate = 200 B/s`) y programaba sus datagramas a ~14 s vista (`Captura→enviado máx 13 995,92 ms`).
+   - **Corrección:** `TokenBucket::set_rate_at` acredita primero los tokens hasta `t0` y `Spread` calcula `paced = (total - avail).max(0.0)` (cubierto por el test `spread_never_stalls_when_frame_barely_exceeds_capacity`).
+4. **Parada inicial de `456,8 ms` en `VideoDecoder` y tope de espera en `KeyframeRequester`:**
+   - `VideoDecoder::new_with_size` fija `MF_MT_FRAME_SIZE` antes de `SetInputType` para no reservar primero superficies `1920×1080` y sufrir `MF_E_TRANSFORM_STREAM_CHANGE` en el primer IDR, `DECODE_QUEUE` sube de 16 a 64 y `KeyframeRequester::wait_for` acota `base` a `KEYFRAME_MAX_WAIT`.
+
+Comparativa de las **tres sesiones reales de 60 s por Wi-Fi** (`PC-A` → `PC-B`, `1366×768@60`):
+
+| Métrica (60 s reales por Wi-Fi) | 1.ª prueba (`v0.0.1-alpha.1`) | 2.ª prueba (`v0.0.1-alpha.2`) | 3.ª prueba (con correcciones de *pacing*, CBR y cursor 125 Hz) |
+|---|---:|---:|---:|
+| Frames capturados / enviados (fps) | 1 651 / 1 564 (26,1 fps) | 1 250 / 1 210 (20,2 fps) | **1 825 / 1 781 (29,7 fps)** |
+| Tamaño medio IDR / P-frame | 79,5 KiB / 36,7 KiB | 103,0 KiB / 40,3 KiB | **31,3 KiB / 16,4 KiB** |
+| Bitrate en datagramas (datagramas enviados) | 8,40 Mbps (58 063) | 8,71 Mbps (46 309) | **4,57 Mbps (25 382)** |
+| `Captura→enviado (QPC)` p50 / p95 / máx. | 17,9 / 27,8 / 121,4 ms | 18,1 / 26,8 / 90,2 ms | **18,13 / 25,62 / 53,18 ms** |
+| Frames perdidos post-FEC (sin ningún datagrama) | **31** (27) | **19** (15) | **2 (0)** |
+| Frames descartados esperando IDR | **213** | **0** | **0** |
+| `RequestKeyframe` enviados (por espera vencida) | **104** (—) | **4** (2) | **1 (0)** |
+| IDR forzados (total IDR emitidos) | **90** (91) | **5** (6) | **2 (4)** |
+| Recuperación `1.ª pérdida → IDR` | 400 – **6 400 ms** | 3 288 – 4 042 ms | **96,9 ms** (2.ª sesión) / **627,3 ms** (3.ª, RTT 120 ms) |
+| Posiciones de cursor enviadas (repintados solo cursor) | 412 (—) | 638 (285) | **3 040 (846–1 122)** |
+| *Jitter* RFC 3550 al final de la sesión | 38,8 ms | 38,9 ms | **10,7 – 12,5 ms** |
+
 ## Pendiente
 1. **Latencia de codificación:** QSV directo (oneVPL) o NVENC/AMF en equipos con GPU dedicada (ver PoC-3).
 2. **Cambio de modo durante la sesión:** no hay mensaje en el contrato para anunciar el nuevo `display_mode`.

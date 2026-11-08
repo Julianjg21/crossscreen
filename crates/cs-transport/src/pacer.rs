@@ -99,6 +99,16 @@ impl TokenBucket {
         self.rate = rate.max(1.0);
     }
 
+    /// Acredita los tokens acumulados hasta `at` con el ritmo actual y fija el
+    /// nuevo ritmo a partir de ese instante.
+    pub fn set_rate_at(&mut self, rate: f64, at: Instant) {
+        if at > self.last {
+            self.tokens = self.tokens_at(at);
+            self.last = at;
+        }
+        self.rate = rate.max(1.0);
+    }
+
     /// Saldo disponible en `at` (puede ser negativo si hay deuda).
     pub fn tokens_at(&self, at: Instant) -> f64 {
         let dt = at.saturating_duration_since(self.last).as_secs_f64();
@@ -128,12 +138,27 @@ impl TokenBucket {
 #[derive(Debug, Clone)]
 pub struct Pacer {
     cfg: PacerConfig,
+    max_rate: Option<f64>,
     bucket: Option<TokenBucket>,
 }
 
 impl Pacer {
     pub fn new(cfg: PacerConfig) -> Self {
-        Pacer { cfg, bucket: None }
+        Pacer {
+            cfg,
+            max_rate: None,
+            bucket: None,
+        }
+    }
+
+    /// Tope de ritmo en bytes/s para [`PacingMode::Spread`]: evita que un IDR
+    /// grande con paridad del 50 % (p. ej. 150 KiB en 10 ms = 120 Mbps) sature
+    /// el búfer del Wi-Fi y se pierda él mismo.
+    pub fn with_max_rate(mut self, bytes_per_sec: f64) -> Self {
+        if bytes_per_sec > 0.0 {
+            self.max_rate = Some(bytes_per_sec);
+        }
+        self
     }
 
     pub fn config(&self) -> PacerConfig {
@@ -148,27 +173,37 @@ impl Pacer {
         frame_interval: Duration,
         now: Instant,
     ) -> Vec<Instant> {
+        if matches!(self.cfg.mode, PacingMode::Off) {
+            return vec![now; sizes.len()];
+        }
         let total: usize = sizes.iter().sum();
+        let capacity = self.capacity(sizes);
+        let bucket = self
+            .bucket
+            .get_or_insert_with(|| TokenBucket::new(f64::MAX / 4.0, capacity, now));
+        let t0 = now.max(bucket.last);
+        let avail = bucket.tokens_at(t0);
         let rate = match self.cfg.mode {
-            PacingMode::Off => return vec![now; sizes.len()],
+            PacingMode::Off => unreachable!(),
             PacingMode::Spread { fraction } => {
                 let window = frame_interval.as_secs_f64() * fraction.clamp(0.01, 1.0);
-                // Los primeros `burst_bytes` salen al instante: el resto se
-                // reparte para acabar justo al final de la ventana.
-                let paced = total.saturating_sub(self.capacity(sizes)) as f64;
-                if window <= 0.0 || paced <= 0.0 {
+                // Con el saldo real `avail` en `t0`, los bytes pendientes
+                // `total - avail` se reparten para acabar justo al final de la
+                // ventana (y si todo cabe en `avail`, el bucket se recarga en
+                // una ventana).
+                let paced = (total as f64 - avail).max(0.0);
+                if window <= 0.0 {
                     f64::MAX / 4.0
+                } else if paced <= 0.0 {
+                    capacity as f64 / window
                 } else {
-                    paced / window
+                    let r = paced / window;
+                    self.max_rate.map_or(r, |m| r.min(m))
                 }
             }
             PacingMode::Rate { bytes_per_sec } => bytes_per_sec,
         };
-        let capacity = self.capacity(sizes);
-        let bucket = self
-            .bucket
-            .get_or_insert_with(|| TokenBucket::new(rate, capacity, now));
-        bucket.set_rate(rate);
+        bucket.set_rate_at(rate, t0);
         sizes.iter().map(|&s| bucket.reserve(s, now)).collect()
     }
 
@@ -407,6 +442,30 @@ mod tests {
         assert!(s[2..]
             .windows(2)
             .all(|w| (w[1] - w[0]).abs_diff(gap) < Duration::from_micros(2)));
+    }
+
+    #[test]
+    fn spread_never_stalls_when_frame_barely_exceeds_capacity() {
+        let t0 = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let window = interval.mul_f64(0.6);
+        let mut p = Pacer::new(PacerConfig {
+            mode: PacingMode::Spread { fraction: 0.6 },
+            burst_bytes: 4648,
+        });
+        // Frame 1: vacía el bucket al final de la ventana (t0 + 10 ms).
+        let f1 = p.schedule(&[1162; 15], interval, t0);
+        assert!(*f1.last().unwrap() <= t0 + window + Duration::from_micros(10));
+        // Frame 2: apenas 2 B por encima de `burst_bytes` (5 × 930 = 4650 B),
+        // cuando el bucket aún no estaba lleno. Antes calculaba `paced = 2 B`
+        // (`rate = 200 B/s`) y programaba los datagramas a ~14 segundos vista.
+        let t1 = t0 + Duration::from_millis(12);
+        let f2 = p.schedule(&[930; 5], interval, t1);
+        let span = *f2.last().unwrap() - t1;
+        assert!(
+            span <= window + Duration::from_micros(10),
+            "el frame tardó {span:?} en vez de <= {window:?}"
+        );
     }
 
     #[test]

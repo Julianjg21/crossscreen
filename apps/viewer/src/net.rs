@@ -35,7 +35,7 @@ use winit::event_loop::EventLoopProxy;
 pub const STREAM_ID: StreamId = 1;
 /// AU comprimidas en cola hacia el decodificador. Holgado para una ráfaga
 /// tras un hipo de red; si se llena, el decodificador va muy por detrás.
-const DECODE_QUEUE: usize = 16;
+const DECODE_QUEUE: usize = 64;
 /// Mínimo entre dos `RequestKeyframe` (contrato: como máximo uno cada 100 ms).
 pub const KEYFRAME_MIN_INTERVAL: Duration = Duration::from_millis(100);
 /// Espera mínima tras un `RequestKeyframe` antes de repetirlo (política
@@ -208,8 +208,8 @@ impl KeyframeRequester {
 
     /// Espera antes de repetir una petición.
     pub fn wait_for(rtt: Duration, backoff: u32) -> Duration {
-        let base = (rtt * 3).max(KEYFRAME_MIN_WAIT);
-        (base * (1u32 << backoff.min(4))).min(KEYFRAME_MAX_WAIT.max(base))
+        let base = (rtt * 3).clamp(KEYFRAME_MIN_WAIT, KEYFRAME_MAX_WAIT);
+        (base * (1u32 << backoff.min(4))).min(KEYFRAME_MAX_WAIT)
     }
 
     /// ¿Hay que enviar ahora? `highest_seq` es el mayor `frame_seq` visto.

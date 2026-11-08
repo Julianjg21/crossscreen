@@ -48,6 +48,7 @@ const STALL_INPUTS: u32 = 8;
 /// Lo que necesita el hilo.
 pub struct Worker {
     pub device: ID3D11Device,
+    pub initial_size: Option<(u32, u32)>,
     pub input: Receiver<DecodeInput>,
     pub mailbox: Arc<Mailbox>,
     pub proxy: EventLoopProxy<UserEvent>,
@@ -68,7 +69,7 @@ struct Episode {
 /// Cuerpo del hilo. `ready` recibe el resultado de crear el decodificador.
 /// Termina cuando la red suelta su extremo del canal (fin de sesión).
 pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
-    let mut decoder = match VideoDecoder::new(&w.device) {
+    let mut decoder = match VideoDecoder::new_with_size(&w.device, w.initial_size) {
         Ok(d) => {
             let _ = ready.send(Ok(()));
             d
