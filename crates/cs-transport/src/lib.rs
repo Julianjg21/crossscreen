@@ -8,14 +8,19 @@
 //! - [`pacer`]: reparto (*pacing*) de los datagramas de un frame con un
 //!   presupuesto de bytes y espera de alta resolución.
 //! - [`os`]: espera de alta resolución y tiempo de CPU del proceso.
+//! - [`fec`]: FEC adaptativo (sans-IO) a partir de `ReceiverStats`.
+//! - [`simloss`]: **solo pruebas**, inyector de pérdidas en ráfaga
+//!   (Gilbert-Elliott) para reproducir una Wi-Fi en loopback.
 
 pub mod endpoint;
+pub mod fec;
 pub mod framed;
 pub mod os;
 pub mod pacer;
 pub mod packetizer;
 pub mod pairing;
 pub mod reassembly;
+pub mod simloss;
 
 pub use endpoint::{Connection, Endpoint};
 pub use framed::FramedStream;

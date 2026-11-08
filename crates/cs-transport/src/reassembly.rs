@@ -475,6 +475,104 @@ mod tests {
         assert_eq!(lost, 5);
     }
 
+    /// Quita los datagramas `[start, start + len)` (una ráfaga) y reensambla.
+    fn deliver_with_burst(dgs: &[Vec<u8>], start: usize, len: usize) -> Vec<CompleteFrame> {
+        let mut r = Reassembler::new(1);
+        let mut frames = Vec::new();
+        for (i, d) in dgs.iter().enumerate() {
+            if (start..start + len).contains(&i) {
+                continue;
+            }
+            frames.extend(only_frames(r.push(d).unwrap()));
+        }
+        frames
+    }
+
+    #[test]
+    fn interleaved_order_survives_bursts_that_kill_sequential() {
+        let cfg = PacketizerConfig {
+            max_datagram: 1200,
+            fec_ratio: 0.1,
+        };
+        // 200 KB → 171 shards de datos en 3 bloques de 57 (+6 de paridad cada uno).
+        let data = frame_bytes(200_000, 4);
+        let seq = Packetizer::new(1, cfg).packetize(meta(1), &data).unwrap();
+        let int = Packetizer::new(1, cfg)
+            .with_interleave(true)
+            .packetize(meta(1), &data)
+            .unwrap();
+        assert_eq!(seq.len(), int.len());
+        // Ráfaga de 15 datagramas consecutivos (> 6 de paridad de un bloque,
+        // ≤ 3·6 en total): bloque a bloque se pierde el frame; entrelazado, cada
+        // bloque pierde 5 y se recupera.
+        for start in [0, 40, 100, seq.len() - 15] {
+            assert!(
+                deliver_with_burst(&seq, start, 15).is_empty(),
+                "secuencial, ráfaga en {start}"
+            );
+            let got = deliver_with_burst(&int, start, 15);
+            assert_eq!(got.len(), 1, "entrelazado, ráfaga en {start}");
+            assert_eq!(got[0].data, data);
+        }
+        // Más de la paridad total: perdido también entrelazado.
+        assert!(deliver_with_burst(&int, 10, 19).is_empty());
+    }
+
+    #[test]
+    fn keyframe_parity_recovers_large_burst() {
+        let p = Packetizer::new(
+            1,
+            PacketizerConfig {
+                max_datagram: 1200,
+                fec_ratio: 0.1,
+            },
+        )
+        .with_keyframe_fec_ratio(0.5)
+        .with_interleave(true);
+        let data = frame_bytes(80_000, 7); // ~IDR medio de la prueba Wi-Fi (69 shards)
+        let mut key_meta = meta(0);
+        key_meta.keyframe = true;
+        let dgs = p.packetize(key_meta, &data).unwrap();
+        // 2 bloques de 35/34 con 18/17 de paridad: aguanta una ráfaga de 30.
+        let got = deliver_with_burst(&dgs, 20, 30);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].keyframe);
+        assert_eq!(got[0].data, data);
+    }
+
+    #[test]
+    fn interleaved_frames_in_sequence_with_losses() {
+        // Varios frames seguidos entrelazados y con pérdidas sueltas: el
+        // reensamblador entrega todos en orden.
+        let p = Packetizer::new(
+            1,
+            PacketizerConfig {
+                max_datagram: 1200,
+                fec_ratio: 0.15,
+            },
+        )
+        .with_interleave(true)
+        .with_max_block_data_shards(16);
+        let mut r = Reassembler::new(1);
+        let mut got = Vec::new();
+        let mut n = 0usize;
+        for seq in 0..20u32 {
+            let data = frame_bytes(5_000 + seq as usize * 4_000, seq as u8);
+            for d in p.packetize(meta(seq), &data).unwrap() {
+                n += 1;
+                // 1 de cada 11 (~9 %, no múltiplo del número de bloques: no cae siempre
+                // en el mismo bloque).
+                if n % 11 == 0 {
+                    continue;
+                }
+                got.extend(only_frames(r.push(&d).unwrap()));
+            }
+            assert_eq!(got.last().map(|f| f.frame_seq), Some(seq));
+            assert_eq!(got.last().unwrap().data, data);
+        }
+        assert_eq!(r.stats().frames_lost, 0);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
         /// Con pérdidas ≤ paridad por bloque, el frame siempre se reconstruye.
