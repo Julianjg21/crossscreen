@@ -55,6 +55,8 @@ pub struct NetConfig {
     pub native_mode: Mode,
     pub dpi: u16,
     pub keyframe_policy: KeyframePolicy,
+    /// Sincronizar el portapapeles de texto con la fuente (F7).
+    pub clipboard: bool,
 }
 
 /// Arranca el hilo de red. Al terminar envía `UserEvent::NetDone`.
@@ -585,6 +587,7 @@ async fn session(
         early_shape,
         early_pos,
         cfg.keyframe_policy,
+        cfg.clipboard,
     )
     .await;
     ctl.finish();
@@ -610,6 +613,7 @@ async fn streaming(
     early_shape: Option<cs_protocol::control::CursorShape>,
     early_pos: Option<(i32, i32, bool)>,
     keyframe_policy: KeyframePolicy,
+    clipboard_enabled: bool,
 ) -> Result<Exit> {
     match timed("la ventana y el decodificador", async {
         ready_rx
@@ -661,6 +665,18 @@ async fn streaming(
     stats_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut kf_tick = tokio::time::interval(Duration::from_millis(10));
     kf_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Portapapeles (F7): si no se puede abrir, la sesión sigue sin él.
+    let mut clipboard = if clipboard_enabled {
+        match cs_clipboard::ClipboardBridge::spawn(cs_clipboard::bridge::DEFAULT_POLL) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::warn!("portapapeles no disponible: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let exit = 'main: loop {
         tokio::select! {
@@ -765,6 +781,12 @@ async fn streaming(
                 }
                 Ok(Some(ControlMessage::Bye { reason })) => break Exit::Ended(format!("Bye de la fuente ({reason:?})")),
                 Ok(Some(ControlMessage::StopStream { .. })) => break Exit::Ended("StopStream de la fuente".into()),
+                Ok(Some(ControlMessage::ClipboardText(t))) => {
+                    if let Some(b) = clipboard.as_ref() {
+                        lock().clipboard_received += 1;
+                        b.deliver(t);
+                    }
+                }
                 Ok(Some(other)) => tracing::debug!("control: {other:?}"),
                 Ok(None) => break Exit::Ended("la fuente cerró el canal de control".into()),
                 Err(e) => break Exit::Ended(format!("canal de control: {e}")),
@@ -781,6 +803,10 @@ async fn streaming(
                 if let Some(a) = keyframes.poll(Instant::now(), conn.rtt(), highest_seq) {
                     send_keyframe_request(ctl, stats, a).await?;
                 }
+            }
+            Some(msg) = cs_clipboard::bridge::next_outgoing(&mut clipboard) => {
+                ctl.send(&ControlMessage::ClipboardText(msg)).await?;
+                lock().clipboard_sent += 1;
             }
             _ = kf_tick.tick() => {
                 if let Some(a) = keyframes.poll(Instant::now(), conn.rtt(), highest_seq) {

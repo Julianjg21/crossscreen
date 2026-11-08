@@ -170,6 +170,8 @@ pub struct SessionStats {
     pub cursor_shapes: u64,
     pub cursor_positions: u64,
     pub input_events_sent: u64,
+    pub clipboard_sent: u64,
+    pub clipboard_received: u64,
     // Decodificación.
     pub frames_decoded: u64,
     pub decode_errors: u64,
@@ -283,8 +285,12 @@ impl SessionStats {
             self.cursor_only_presents,
             self.cursor_shapes,
             self.cursor_positions,
-            if self.input_events_sent > 0 {
-                format!("; entrada remota enviada: {} eventos", self.input_events_sent)
+            if self.input_events_sent > 0 || self.clipboard_sent > 0 || self.clipboard_received > 0
+            {
+                format!(
+                    "; entrada remota enviada: {} eventos; portapapeles: {} enviados, {} recibidos",
+                    self.input_events_sent, self.clipboard_sent, self.clipboard_received
+                )
             } else {
                 String::new()
             }

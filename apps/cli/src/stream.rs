@@ -77,6 +77,9 @@ pub struct StreamArgs {
     /// Desactivar la inyección de entrada remota (ratón y teclado del receptor).
     #[arg(long)]
     pub no_remote_input: bool,
+    /// Desactivar la sincronización del portapapeles de texto con el receptor.
+    #[arg(long)]
+    pub no_clipboard: bool,
     /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
     /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
     #[arg(long)]
@@ -123,6 +126,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     cfg.static_refresh =
         (a.static_refresh > 0.0).then(|| Duration::from_secs_f64(a.static_refresh));
     cfg.accept_input = !a.no_remote_input;
+    cfg.clipboard = !a.no_clipboard;
     cfg.sim_loss = a.sim_loss.map(|m| (m, a.sim_loss_seed));
 
     // Señal de parada: Ctrl+C, Ctrl+Break y cierre de la consola.

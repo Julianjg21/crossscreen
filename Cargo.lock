@@ -784,6 +784,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "clap",
+ "cs-clipboard",
  "cs-core",
  "cs-decode",
  "cs-discovery",
@@ -826,6 +827,7 @@ dependencies = [
  "cs-protocol",
  "sha2",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
  "windows 0.58.0",
 ]
@@ -913,6 +915,7 @@ dependencies = [
  "bytes",
  "clap",
  "cs-capture",
+ "cs-clipboard",
  "cs-core",
  "cs-display",
  "cs-encode",

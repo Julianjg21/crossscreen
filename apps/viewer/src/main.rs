@@ -115,6 +115,9 @@ pub struct Args {
     /// Desactivar el envío de entrada remota (ratón y teclado locales hacia la fuente).
     #[arg(long)]
     pub no_remote_input: bool,
+    /// Desactivar la sincronización del portapapeles de texto con la fuente.
+    #[arg(long)]
+    pub no_clipboard: bool,
 }
 
 #[cfg(windows)]

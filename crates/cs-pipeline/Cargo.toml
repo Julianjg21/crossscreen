@@ -14,6 +14,7 @@ cs-security.workspace = true
 cs-transport.workspace = true
 cs-display.workspace = true
 cs-input = { path = "../cs-input" }
+cs-clipboard = { path = "../cs-clipboard" }
 cs-capture = { path = "../cs-capture" }
 cs-encode = { path = "../cs-encode" }
 anyhow.workspace = true

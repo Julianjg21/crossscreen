@@ -341,6 +341,19 @@ pub(crate) async fn run(
     let mut peer_gone = false;
     let _ = cs_input::make_process_per_monitor_dpi_aware();
     let mut injector = SendInputInjector::new();
+    // Portapapeles (F7): sobrevive a las reconexiones; si no se puede abrir,
+    // la sesión sigue sin él.
+    let mut clipboard = if cfg.clipboard {
+        match cs_clipboard::ClipboardBridge::spawn(cs_clipboard::bridge::DEFAULT_POLL) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::warn!("portapapeles no disponible: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let end_reason: String = 'session: loop {
         let drop_reason: String = loop {
             let deferred = coalescer
@@ -428,6 +441,12 @@ pub(crate) async fn run(
                             }
                         }
                     }
+                    Ok(Some(ControlMessage::ClipboardText(t))) => {
+                        if let Some(b) = clipboard.as_ref() {
+                            cs.clipboard_received += 1;
+                            b.deliver(t);
+                        }
+                    }
                     Ok(Some(other)) => tracing::debug!(?other, "mensaje de control ignorado"),
                     Ok(None) => {
                         peer_gone = true;
@@ -457,6 +476,13 @@ pub(crate) async fn run(
                         }
                         cs.cursor_positions += 1;
                     }
+                }
+                Some(msg) = cs_clipboard::bridge::next_outgoing(&mut clipboard) => {
+                    if let Err(e) = ctl.send(&ControlMessage::ClipboardText(msg)).await {
+                        peer_gone = true;
+                        break format!("conexión perdida: {e}");
+                    }
+                    cs.clipboard_sent += 1;
                 }
                 r = shape_rx.changed(), if shape_alive => {
                     if r.is_err() {

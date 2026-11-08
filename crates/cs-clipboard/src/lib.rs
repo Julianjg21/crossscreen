@@ -15,10 +15,12 @@
 //!    [`ClipboardSync::after_local_write`] con el número de secuencia del SO
 //!    posterior a la escritura.
 
+pub mod bridge;
 pub mod text;
 
 #[cfg(windows)]
 mod win;
+pub use bridge::ClipboardBridge;
 #[cfg(windows)]
 pub use win::Win32Clipboard;
 
@@ -110,6 +112,21 @@ impl ClipboardSync {
 
     pub fn stats(&self) -> SyncStats {
         self.stats
+    }
+
+    /// Fija el estado inicial al empezar la sesión **sin enviar nada**: lo que
+    /// ya estaba copiado no se manda al par (conectar no debe sobrescribir por
+    /// sorpresa su portapapeles); solo se sincronizan los cambios posteriores.
+    pub fn prime(&mut self, os_seq: u32, text: Option<&str>) {
+        self.last_seen_os_seq = Some(os_seq);
+        self.local_has = text.map(|t| hash_text(&text::canonicalize(t)));
+    }
+
+    /// Olvida el último número de secuencia visto para que el próximo sondeo
+    /// vuelva a leer (p. ej. si la lectura falló porque otro proceso tenía el
+    /// portapapeles abierto).
+    pub fn forget_seen(&mut self) {
+        self.last_seen_os_seq = None;
     }
 
     /// `true` si el portapapeles del SO cambió desde la última vez que se miró
@@ -402,6 +419,37 @@ mod tests {
             text: "\0abc".into(),
         };
         assert_eq!(a.on_remote(&nul), Err(ClipboardError::Empty));
+    }
+
+    #[test]
+    fn prime_does_not_send_existing_content_but_later_changes_are_sent() {
+        let mut a = ClipboardSync::new();
+        let mut os = FakeOs::default();
+        os.user_copies("ya estaba copiado");
+        a.prime(os.seq, os.text.as_deref());
+        assert!(
+            poll(&mut a, &os).is_none(),
+            "lo previo a la sesión no se envía"
+        );
+        // Si el par envía justo ese texto, no hace falta reescribirlo.
+        let act = a
+            .on_remote(&ClipboardText {
+                seq: 1,
+                text: "ya estaba copiado".into(),
+            })
+            .unwrap();
+        assert_eq!(act, RemoteAction::AlreadyPresent);
+        os.user_copies("nuevo");
+        assert_eq!(poll(&mut a, &os).unwrap().text, "nuevo");
+    }
+
+    #[test]
+    fn forget_seen_forces_reread() {
+        let mut a = ClipboardSync::new();
+        assert!(a.should_read(5));
+        assert!(!a.should_read(5));
+        a.forget_seen();
+        assert!(a.should_read(5));
     }
 
     #[test]

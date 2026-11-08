@@ -90,6 +90,9 @@ pub struct ControlStats {
     /// Eventos de entrada remota (ratón/teclado) inyectados y rechazados/bloqueados.
     pub input_events_injected: u64,
     pub input_events_blocked: u64,
+    /// Portapapeles (F7): textos enviados al receptor y recibidos de él.
+    pub clipboard_sent: u64,
+    pub clipboard_received: u64,
     /// Cambios de paridad del FEC adaptativo y rango alcanzado.
     pub fec_changes: u64,
     pub fec_initial: f32,
@@ -239,6 +242,13 @@ impl fmt::Display for SenderReport {
                 String::new()
             }
         )?;
+        if c.clipboard_sent > 0 || c.clipboard_received > 0 {
+            writeln!(
+                f,
+                "Portapapeles: {} textos enviados · {} recibidos",
+                c.clipboard_sent, c.clipboard_received
+            )?;
+        }
         if let Some(rs) = c.last_receiver_stats {
             writeln!(f, "Último ReceiverStats: {rs:?}")?;
         }

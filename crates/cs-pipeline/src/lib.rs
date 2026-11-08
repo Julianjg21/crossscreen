@@ -81,6 +81,9 @@ pub struct SenderConfig {
     /// Permitir que el receptor inyecte eventos de ratón y teclado (F6) en el
     /// rectángulo del monitor transmitido.
     pub accept_input: bool,
+    /// Sincronizar el portapapeles de texto con el receptor (F7), en ambos
+    /// sentidos. Solo los cambios posteriores al inicio de la sesión.
+    pub clipboard: bool,
     /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
     /// `(modelo, semilla)`.
     pub sim_loss: Option<(LossModel, u64)>,
@@ -108,6 +111,7 @@ impl SenderConfig {
             static_refresh: Some(Duration::from_secs(1)),
             reconnect: None,
             accept_input: true,
+            clipboard: true,
             sim_loss: None,
         }
     }
