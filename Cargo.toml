@@ -19,6 +19,7 @@ members = [
     "apps/agent",
     "apps/desktop/src-tauri",
     "crates/cs-pipeline",
+    "crates/cs-input",
 ]
 
 [workspace.package]

@@ -872,6 +872,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cs-input"
+version = "0.0.1"
+dependencies = [
+ "cs-core",
+ "cs-protocol",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "cs-ipc"
 version = "0.0.1"
 dependencies = [
