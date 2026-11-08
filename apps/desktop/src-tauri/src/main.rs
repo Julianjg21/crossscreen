@@ -128,23 +128,40 @@ async fn agent_request(
 
 /// Busca `crossscreen-agent` junto al ejecutable de la UI o, en desarrollo,
 /// en los directorios de compilación hermanos (`debug`/`release`).
+/// Localiza `crossscreen-agent` para lanzarlo.
+///
+/// Seguridad (evitar *binary planting*): en compilaciones de release solo se
+/// acepta el ejecutable **en la misma carpeta que el panel**. Buscar en
+/// carpetas superiores permitiría ejecutar un binario plantado, p. ej. en
+/// `Descargas\target\release\` si el `.zip` se descomprimió en `Descargas`.
+/// Los directorios `target*` del repositorio solo se consultan en desarrollo.
 fn find_agent() -> Option<PathBuf> {
     let exe_name = format!("crossscreen-agent{}", std::env::consts::EXE_SUFFIX);
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    #[allow(unused_mut)] // solo se amplía en compilaciones de desarrollo
     let mut candidates = vec![dir.join(&exe_name)];
+    #[cfg(debug_assertions)]
+    candidates.extend(dev_agent_candidates(&dir, &exe_name));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// Solo en desarrollo: `target/<perfil>/` vecinos y `target*` del repositorio.
+#[cfg(debug_assertions)]
+fn dev_agent_candidates(dir: &std::path::Path, exe_name: &str) -> Vec<PathBuf> {
+    let mut v = Vec::new();
     if let Some(parent) = dir.parent() {
         for profile in ["debug", "release"] {
-            candidates.push(parent.join(profile).join(&exe_name));
+            v.push(parent.join(profile).join(exe_name));
         }
         if let Some(root) = parent.parent() {
             for target_dir in ["target", "target-agy", "target-claude"] {
                 for profile in ["release", "debug"] {
-                    candidates.push(root.join(target_dir).join(profile).join(&exe_name));
+                    v.push(root.join(target_dir).join(profile).join(exe_name));
                 }
             }
         }
     }
-    candidates.into_iter().find(|p| p.is_file())
+    v
 }
 
 async fn spawn_and_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInfo, CmdError> {
