@@ -70,6 +70,10 @@ pub struct StreamArgs {
     /// (0 = nunca).
     #[arg(long, default_value_t = 1.0)]
     pub static_refresh: f64,
+    /// Ventana de gracia en segundos para reconectar tras un corte QUIC
+    /// manteniendo vivo el monitor virtual (0 = no reconectar).
+    #[arg(long, default_value_t = 15.0)]
+    pub reconnect_grace: f64,
     /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
     /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
     #[arg(long)]
@@ -134,6 +138,12 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     }
     .parse()?;
     let endpoint = Endpoint::client(bind, identity.clone())?;
+    cfg.reconnect = (a.reconnect_grace > 0.0).then(|| cs_pipeline::ReconnectConfig {
+        endpoint: endpoint.clone(),
+        addr: a.addr,
+        peer,
+        grace: Duration::from_secs_f64(a.reconnect_grace),
+    });
     let conn = endpoint
         .connect(a.addr, PeerPolicy::Exactly(peer), ALPN)
         .await

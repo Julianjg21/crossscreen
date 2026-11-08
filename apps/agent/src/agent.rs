@@ -655,6 +655,12 @@ impl Agent {
         };
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
+        cfg.reconnect = Some(cs_pipeline::ReconnectConfig {
+            endpoint: endpoint.clone(),
+            addr,
+            peer: peer_record.fingerprint,
+            grace: cs_pipeline::DEFAULT_RECONNECT_GRACE,
+        });
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         {
             let mut st = self.stream.lock().await;

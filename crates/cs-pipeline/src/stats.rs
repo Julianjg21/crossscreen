@@ -85,6 +85,8 @@ pub struct ControlStats {
     pub cursor_shapes: u64,
     pub receiver_stats: u64,
     pub last_receiver_stats: Option<ReceiverStats>,
+    /// Reconexiones completadas tras un corte temporal conservando el monitor virtual.
+    pub reconnections: u64,
     /// Cambios de paridad del FEC adaptativo y rango alcanzado.
     pub fec_changes: u64,
     pub fec_initial: f32,
@@ -216,8 +218,15 @@ impl fmt::Display for SenderReport {
         )?;
         writeln!(
             f,
-            "Cursor: {} posiciones y {} formas enviadas · ReceiverStats recibidos {}",
-            c.cursor_positions, c.cursor_shapes, c.receiver_stats
+            "Cursor: {} posiciones y {} formas enviadas · ReceiverStats recibidos {}{}",
+            c.cursor_positions,
+            c.cursor_shapes,
+            c.receiver_stats,
+            if c.reconnections > 0 {
+                format!(" · reconexiones {}", c.reconnections)
+            } else {
+                String::new()
+            }
         )?;
         if let Some(rs) = c.last_receiver_stats {
             writeln!(f, "Último ReceiverStats: {rs:?}")?;

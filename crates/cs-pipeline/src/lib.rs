@@ -24,12 +24,27 @@ pub mod win;
 pub use stats::SenderReport;
 
 use cs_core::{DeviceId, Mode, StreamMode};
+use cs_security::Fingerprint;
 use cs_transport::simloss::LossModel;
-use cs_transport::{PacingMode, WaitStrategy};
+use cs_transport::{Endpoint, PacingMode, WaitStrategy};
+use std::net::SocketAddr;
 use std::time::Duration;
 
 /// `stream_id` único del MVP.
 pub const STREAM_ID: u16 = 1;
+
+/// Ventana de gracia por defecto para reconectar sin retirar el monitor virtual.
+pub const DEFAULT_RECONNECT_GRACE: Duration = Duration::from_secs(15);
+
+/// Parámetros de reconexión automática ante cortes temporales de red.
+#[derive(Debug, Clone)]
+pub struct ReconnectConfig {
+    pub endpoint: Endpoint,
+    pub addr: SocketAddr,
+    pub peer: Fingerprint,
+    /// Tiempo máximo intentando reconectar antes de retirar el monitor virtual.
+    pub grace: Duration,
+}
 
 /// Configuración de una sesión emisora.
 #[derive(Debug, Clone)]
@@ -60,6 +75,9 @@ pub struct SenderConfig {
     /// Con el escritorio estático, recodificar la última imagen cada este
     /// intervalo (`None` = nunca). Ver el módulo `win::worker`.
     pub static_refresh: Option<Duration>,
+    /// Si `Some`, ante pérdida de conexión QUIC intenta reconectar durante
+    /// `grace` conservando el monitor virtual y el hilo de captura.
+    pub reconnect: Option<ReconnectConfig>,
     /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
     /// `(modelo, semilla)`.
     pub sim_loss: Option<(LossModel, u64)>,
@@ -85,6 +103,7 @@ impl SenderConfig {
             pacing_wait: WaitStrategy::HighResTimer,
             duration: None,
             static_refresh: Some(Duration::from_secs(1)),
+            reconnect: None,
             sim_loss: None,
         }
     }
