@@ -115,12 +115,15 @@ async fn replace_stale_agent(
 ) -> Result<AgentInfo, CmdError> {
     let expected = cs_ipc::agent_version_string();
     let c = client(app, conn).await?;
-    match c.request(Request::Shutdown).await {
-        Ok(_) => {}
-        Err(e) => return Err(CmdError::unavailable(format!(
-            "El agente en ejecución es de otra versión ({old_version}; este panel es {expected}) \
-                 y no se pudo reiniciar: {e}"
-        ))),
+    // Mensaje construido aparte: un `format!` con cadena partida dentro de un
+    // `return` en un brazo de `match` hace que rustfmt alterne entre dos
+    // formatos (no idempotente) y el CI rechazaba el resultado.
+    if let Err(e) = c.request(Request::Shutdown).await {
+        let msg = format!(
+            "El agente en ejecución es de otra versión ({old_version}; este panel es \
+             {expected}) y no se pudo reiniciar: {e}"
+        );
+        return Err(CmdError::unavailable(msg));
     }
     *conn.client.lock().await = None;
     drop(c);
