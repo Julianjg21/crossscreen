@@ -177,8 +177,20 @@ async fn run(
             cfg.data_dir.display()
         );
     }
-    let endpoint = Endpoint::server(cfg.bind, identity.clone(), PeerPolicy::pinned(fps), ALPN)
+    let policy = PeerPolicy::pinned(fps);
+    // Conjunto compartido con el verificador TLS: se actualiza antes de cada
+    // conexión para que un `crossscreen forget` surta efecto sin reiniciar.
+    let PeerPolicy::Pinned(pinned_set) = policy.clone() else {
+        unreachable!("PeerPolicy::pinned crea la variante Pinned")
+    };
+    let endpoint = Endpoint::server(cfg.bind, identity.clone(), policy, ALPN)
         .with_context(|| format!("escuchando en {}", cfg.bind))?;
+    let trust_path = cfg.data_dir.join("trusted-peers.json");
+    let current_trust = || -> Result<Vec<cs_security::Fingerprint>> {
+        Ok(TrustStore::open(&trust_path)
+            .context("releyendo el almacén de confianza")?
+            .fingerprints())
+    };
     println!(
         "crossscreen-viewer escuchando en UDP {} (huella {}, {} par(es) de confianza); native_mode {}x{}@{:.2} Hz, {} dpi",
         endpoint.local_addr()?,
@@ -190,6 +202,15 @@ async fn run(
         cfg.dpi
     );
     loop {
+        // Revocación: releer el almacén antes de aceptar la siguiente conexión.
+        match current_trust() {
+            Ok(fps) => {
+                if let Ok(mut set) = pinned_set.write() {
+                    *set = fps.into_iter().collect();
+                }
+            }
+            Err(e) => eprintln!("{e:#}; se mantiene la lista anterior"),
+        }
         let conn = tokio::select! {
             c = endpoint.accept() => match c {
                 None => break,
@@ -201,6 +222,20 @@ async fn run(
             },
             _ = cmd_rx.recv() => break,
         };
+        // Segunda comprobación tras el handshake: el par pudo ser olvidado
+        // mientras se esperaba la conexión. Si no se puede releer, se rechaza.
+        let still_trusted = current_trust()
+            .map(|fps| fps.contains(&conn.peer_fingerprint()))
+            .unwrap_or(false);
+        if !still_trusted {
+            eprintln!(
+                "conexión de {} rechazada: el equipo {} ya no está emparejado",
+                conn.remote_addr(),
+                conn.peer_fingerprint().short()
+            );
+            conn.close(b"not trusted");
+            continue;
+        }
         println!(
             "conexión de {} ({})",
             conn.remote_addr(),
