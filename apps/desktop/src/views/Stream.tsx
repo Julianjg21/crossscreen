@@ -10,6 +10,7 @@ import {
   type PeerInfo,
   type ReceiverSessionInfo,
   type StreamModeInfo,
+  type StreamProfileInfo,
   type StreamReportInfo,
   type StreamSessionInfo,
 } from "../api";
@@ -74,6 +75,7 @@ export default function Stream({
   const [selectedPeer, setSelectedPeer] = useState(initialPeer ?? "");
   const [addr, setAddr] = useState(initialAddr ?? "");
   const [mode, setMode] = useState<StreamModeInfo>("extend");
+  const [profile, setProfile] = useState<StreamProfileInfo>("auto");
   const [resOption, setResOption] = useState("native");
   const [hz, setHz] = useState(60);
   const [mbps, setMbps] = useState("20");
@@ -226,6 +228,7 @@ export default function Stream({
           mode,
           mode_override: modeOverride,
           bitrate_kbps: Math.round(mbpsNum * 1000),
+          profile,
         },
         "stream_started",
       );
@@ -442,6 +445,27 @@ export default function Stream({
                   </div>
                 )}
               </div>
+
+              <label htmlFor="stream-profile" style={{ marginTop: 12 }}>
+                Perfil de red
+              </label>
+              <select
+                id="stream-profile"
+                value={profile}
+                onChange={(e) => {
+                  const p = e.target.value as StreamProfileInfo;
+                  setProfile(p);
+                  if (p === "auto") setMbps("20");
+                  else if (p === "wifi") setMbps("12");
+                  else if (p === "lan") setMbps("35");
+                  else if (p === "saver") setMbps("5");
+                }}
+              >
+                <option value="auto">Automático (escalado por resolución, recomendado)</option>
+                <option value="wifi">Wi-Fi (resiliencia reforzada ante ráfagas)</option>
+                <option value="lan">Cable Ethernet (baja latencia, alta calidad)</option>
+                <option value="saver">Ahorro de datos (enlace débil)</option>
+              </select>
 
               <label htmlFor="stream-mbps">Tasa objetivo H.264 (Mbps, a 1080p60)</label>
               <input

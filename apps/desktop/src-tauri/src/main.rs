@@ -92,15 +92,28 @@ async fn client(app: &AppHandle, conn: &AgentConn) -> Result<Arc<IpcClient>, Cmd
     Ok(c)
 }
 
-#[tauri::command]
-async fn agent_connect(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
-    let c = client(&app, &conn).await?;
+async fn try_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInfo, CmdError> {
+    let c = client(app, conn).await?;
     Ok(AgentInfo {
         agent_version: c.agent_version().to_owned(),
         endpoint: Endpoint::default_for_user()
             .map(|e| e.to_string())
             .unwrap_or_default(),
     })
+}
+
+#[tauri::command]
+async fn agent_connect(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
+    match try_connect(&app, &conn).await {
+        Ok(info) => Ok(info),
+        Err(first_err) => {
+            if find_agent().is_some() {
+                spawn_and_connect(&app, &conn).await
+            } else {
+                Err(first_err)
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -123,13 +136,18 @@ fn find_agent() -> Option<PathBuf> {
         for profile in ["debug", "release"] {
             candidates.push(parent.join(profile).join(&exe_name));
         }
+        if let Some(root) = parent.parent() {
+            for target_dir in ["target", "target-agy", "target-claude"] {
+                for profile in ["release", "debug"] {
+                    candidates.push(root.join(target_dir).join(profile).join(&exe_name));
+                }
+            }
+        }
     }
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Lanza el agente en segundo plano y espera a que acepte conexiones.
-#[tauri::command]
-async fn start_agent(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
+async fn spawn_and_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInfo, CmdError> {
     let path = find_agent().ok_or_else(|| {
         CmdError::unavailable(
             "No se encontró crossscreen-agent junto a la aplicación. Compílalo con `cargo build -p crossscreen-agent` o inícialo a mano.",
@@ -159,13 +177,19 @@ async fn start_agent(app: AppHandle, conn: State<'_, AgentConn>) -> Result<Agent
                 )));
             }
         }
-        if let Ok(info) = agent_connect(app.clone(), conn.clone()).await {
+        if let Ok(info) = try_connect(app, conn).await {
             return Ok(info);
         }
     }
     Err(CmdError::unavailable(
         "El agente se lanzó pero no respondió a tiempo",
     ))
+}
+
+/// Lanza el agente en segundo plano y espera a que acepte conexiones.
+#[tauri::command]
+async fn start_agent(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
+    spawn_and_connect(&app, &conn).await
 }
 
 fn main() {

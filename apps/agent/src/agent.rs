@@ -7,8 +7,8 @@ use cs_discovery::{Announcement, DiscoveredPeer, Discovery, DiscoveryEvent};
 use cs_ipc::{
     AgentStatus, DiscoveredDevice, DisplayInfo, ErrorCode, Event, Handler, HandlerFuture,
     IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo,
-    ReceiverSessionInfo, Request, Response, StreamModeInfo, StreamReportInfo, StreamSessionInfo,
-    IPC_VERSION,
+    ReceiverSessionInfo, Request, Response, StreamModeInfo, StreamProfileInfo, StreamReportInfo,
+    StreamSessionInfo, IPC_VERSION,
 };
 use cs_protocol::{ALPN, ALPN_PAIRING, PROTOCOL_VERSION};
 use cs_security::identity::Identity;
@@ -261,8 +261,9 @@ impl Agent {
                 mode,
                 mode_override,
                 bitrate_kbps,
+                profile,
             } => {
-                self.start_stream(&addr, &peer, mode, mode_override, bitrate_kbps)
+                self.start_stream(&addr, &peer, mode, mode_override, bitrate_kbps, profile)
                     .await
             }
             Request::StopStream => self.stop_stream().await,
@@ -532,6 +533,7 @@ impl Agent {
         mode: StreamModeInfo,
         mode_override: Option<ModeInfo>,
         bitrate_kbps: u32,
+        profile: StreamProfileInfo,
     ) -> Result<Response, IpcError> {
         if !cfg!(windows) {
             return Err(err(
@@ -642,6 +644,7 @@ impl Agent {
             mode,
             mode_override,
             bitrate_kbps,
+            profile,
             initial_rtt_us: conn.rtt().as_micros() as u64,
             started_at,
         };
@@ -655,6 +658,24 @@ impl Agent {
         };
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
+        match profile {
+            StreamProfileInfo::Auto => {}
+            StreamProfileInfo::Wifi => {
+                cfg.fec_ratio = 0.20;
+                cfg.keyframe_fec_ratio = 0.50;
+                cfg.pacing = cs_transport::PacingMode::Spread { fraction: 0.65 };
+            }
+            StreamProfileInfo::Lan => {
+                cfg.fec_ratio = 0.05;
+                cfg.keyframe_fec_ratio = 0.25;
+                cfg.pacing = cs_transport::PacingMode::Spread { fraction: 0.35 };
+            }
+            StreamProfileInfo::Saver => {
+                cfg.fec_ratio = 0.25;
+                cfg.keyframe_fec_ratio = 0.50;
+                cfg.pacing = cs_transport::PacingMode::Spread { fraction: 0.70 };
+            }
+        }
         cfg.reconnect = Some(cs_pipeline::ReconnectConfig {
             endpoint: endpoint.clone(),
             addr,

@@ -66,6 +66,7 @@ export interface DisplayInfo {
 }
 
 export type StreamModeInfo = "extend" | "duplicate";
+export type StreamProfileInfo = "auto" | "wifi" | "lan" | "saver";
 
 export interface StreamSessionInfo {
   peer_name: string;
@@ -75,6 +76,7 @@ export interface StreamSessionInfo {
   mode: StreamModeInfo;
   mode_override: ModeInfo | null;
   bitrate_kbps: number;
+  profile?: StreamProfileInfo;
   initial_rtt_us: number;
   started_at: number;
 }
@@ -144,6 +146,7 @@ export type Request =
       mode: StreamModeInfo;
       mode_override: ModeInfo | null;
       bitrate_kbps: number;
+      profile: StreamProfileInfo;
     }
   | { kind: "stop_stream" }
   | { kind: "start_receiver"; port: number; fullscreen: boolean }

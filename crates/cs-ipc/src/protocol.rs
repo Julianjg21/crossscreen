@@ -103,6 +103,9 @@ pub enum Request {
         mode_override: Option<ModeInfo>,
         /// Tasa objetivo en kbps (p. ej. 20000).
         bitrate_kbps: u32,
+        /// Perfil de red (ajustes de FEC, *pacing* y tasa por defecto).
+        #[serde(default)]
+        profile: StreamProfileInfo,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -235,6 +238,20 @@ pub enum StreamModeInfo {
     Duplicate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamProfileInfo {
+    /// Equilibrado con escalado automático por resolución (por defecto).
+    #[default]
+    Auto,
+    /// Wi-Fi con mayor paridad FEC inicial y *pacing* más suave ante ráfagas.
+    Wifi,
+    /// Cable Ethernet: mayor tasa de bits, menor sobrecarga FEC y menor ventana de *pacing*.
+    Lan,
+    /// Ahorro de ancho de banda para enlaces congestionados o débiles.
+    Saver,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamSessionInfo {
     pub peer_name: String,
@@ -244,6 +261,8 @@ pub struct StreamSessionInfo {
     pub mode: StreamModeInfo,
     pub mode_override: Option<ModeInfo>,
     pub bitrate_kbps: u32,
+    #[serde(default)]
+    pub profile: StreamProfileInfo,
     /// RTT inicial al conectar (µs).
     pub initial_rtt_us: u64,
     /// Segundos desde la época Unix en que se inició la sesión.
@@ -385,6 +404,7 @@ mod tests {
                     refresh_mhz: 60_000,
                 }),
                 bitrate_kbps: 20_000,
+                profile: StreamProfileInfo::Wifi,
             },
             Request::StopStream,
             Request::StartReceiver {
@@ -490,6 +510,7 @@ mod tests {
                         mode: StreamModeInfo::Extend,
                         mode_override: None,
                         bitrate_kbps: 20_000,
+                        profile: StreamProfileInfo::Auto,
                         initial_rtt_us: 12_500,
                         started_at: 1_700_000_100,
                     },
