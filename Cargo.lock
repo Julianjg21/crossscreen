@@ -905,6 +905,7 @@ dependencies = [
  "cs-core",
  "cs-display",
  "cs-encode",
+ "cs-input",
  "cs-protocol",
  "cs-security",
  "cs-transport",
