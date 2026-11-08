@@ -65,6 +65,74 @@ pub enum ControlMessage {
     },
     /// Forma del cursor, solo cuando cambia.
     CursorShape(CursorShape),
+    /// Entrada remota (F6, KVM): del receptor hacia el emisor, que la inyecta
+    /// acotada al monitor transmitido.
+    Input(InputEvent),
+}
+
+/// Botón del ratón.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    /// Botón lateral "atrás" (XBUTTON1 en Windows).
+    Back,
+    /// Botón lateral "adelante" (XBUTTON2 en Windows).
+    Forward,
+}
+
+/// Estado de un botón o tecla.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ButtonState {
+    Pressed,
+    Released,
+}
+
+/// Evento de entrada remota.
+///
+/// Las coordenadas del ratón son **absolutas y normalizadas** al monitor del
+/// flujo (`0..=65535` en cada eje): no dependen de la resolución del receptor
+/// y no acumulan error como el movimiento relativo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputEvent {
+    MouseMove {
+        stream_id: StreamId,
+        x_norm: u16,
+        y_norm: u16,
+    },
+    MouseButton {
+        stream_id: StreamId,
+        button: MouseButton,
+        state: ButtonState,
+    },
+    /// Rueda en unidades de Windows: 120 = un escalón estándar. Positivo en
+    /// `delta_y` = alejar del usuario (arriba); positivo en `delta_x` = derecha.
+    MouseWheel {
+        stream_id: StreamId,
+        delta_x: i16,
+        delta_y: i16,
+    },
+    /// Tecla por *scan code* (conjunto 1, el de Windows), independiente de la
+    /// distribución de teclado. `extended` = prefijo E0 (flechas, Supr, Ctrl
+    /// derecho, etc.).
+    Key {
+        stream_id: StreamId,
+        scancode: u16,
+        extended: bool,
+        state: ButtonState,
+    },
+}
+
+impl InputEvent {
+    pub fn stream_id(&self) -> StreamId {
+        match self {
+            InputEvent::MouseMove { stream_id, .. }
+            | InputEvent::MouseButton { stream_id, .. }
+            | InputEvent::MouseWheel { stream_id, .. }
+            | InputEvent::Key { stream_id, .. } => *stream_id,
+        }
+    }
 }
 
 /// Forma del cursor en RGBA8 no premultiplicado, fila a fila sin relleno.
@@ -125,6 +193,117 @@ mod tests {
             ..ok
         }
         .validate());
+    }
+
+    use crate::framing::{encode, FrameDecoder};
+    use proptest::prelude::*;
+
+    fn roundtrip(msg: &ControlMessage) -> ControlMessage {
+        let wire = encode(msg).expect("serializa");
+        let mut dec = FrameDecoder::new();
+        dec.push(&wire);
+        dec.next_frame::<ControlMessage>()
+            .expect("deserializa")
+            .expect("mensaje completo")
+    }
+
+    #[test]
+    fn input_events_roundtrip() {
+        let events = [
+            InputEvent::MouseMove {
+                stream_id: 1,
+                x_norm: 0,
+                y_norm: u16::MAX,
+            },
+            InputEvent::MouseButton {
+                stream_id: 1,
+                button: MouseButton::Forward,
+                state: ButtonState::Pressed,
+            },
+            InputEvent::MouseWheel {
+                stream_id: 1,
+                delta_x: -120,
+                delta_y: 240,
+            },
+            InputEvent::Key {
+                stream_id: 1,
+                scancode: 0x4B,
+                extended: true,
+                state: ButtonState::Released,
+            },
+        ];
+        for ev in events {
+            let msg = ControlMessage::Input(ev.clone());
+            assert_eq!(roundtrip(&msg), msg);
+            assert_eq!(ev.stream_id(), 1);
+        }
+    }
+
+    #[test]
+    fn input_messages_are_compact() {
+        // El movimiento del ratón se envía con mucha frecuencia: debe ser pequeño.
+        let msg = ControlMessage::Input(InputEvent::MouseMove {
+            stream_id: 1,
+            x_norm: 65535,
+            y_norm: 65535,
+        });
+        assert!(encode(&msg).unwrap().len() <= 16);
+    }
+
+    fn arb_button() -> impl Strategy<Value = MouseButton> {
+        prop_oneof![
+            Just(MouseButton::Left),
+            Just(MouseButton::Right),
+            Just(MouseButton::Middle),
+            Just(MouseButton::Back),
+            Just(MouseButton::Forward),
+        ]
+    }
+
+    fn arb_state() -> impl Strategy<Value = ButtonState> {
+        prop_oneof![Just(ButtonState::Pressed), Just(ButtonState::Released)]
+    }
+
+    fn arb_input() -> impl Strategy<Value = InputEvent> {
+        prop_oneof![
+            (any::<u16>(), any::<u16>(), any::<u16>()).prop_map(|(stream_id, x_norm, y_norm)| {
+                InputEvent::MouseMove {
+                    stream_id,
+                    x_norm,
+                    y_norm,
+                }
+            }),
+            (any::<u16>(), arb_button(), arb_state()).prop_map(|(stream_id, button, state)| {
+                InputEvent::MouseButton {
+                    stream_id,
+                    button,
+                    state,
+                }
+            }),
+            (any::<u16>(), any::<i16>(), any::<i16>()).prop_map(|(stream_id, delta_x, delta_y)| {
+                InputEvent::MouseWheel {
+                    stream_id,
+                    delta_x,
+                    delta_y,
+                }
+            }),
+            (any::<u16>(), any::<u16>(), any::<bool>(), arb_state()).prop_map(
+                |(stream_id, scancode, extended, state)| InputEvent::Key {
+                    stream_id,
+                    scancode,
+                    extended,
+                    state,
+                }
+            ),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_input_roundtrip(ev in arb_input()) {
+            let msg = ControlMessage::Input(ev);
+            prop_assert_eq!(roundtrip(&msg), msg);
+        }
     }
 }
 
