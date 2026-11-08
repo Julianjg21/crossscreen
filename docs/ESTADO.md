@@ -5,17 +5,17 @@
 > - Al terminar tu sesión, actualiza "Trabajo en curso", "Próximos pasos" y añade una línea a la **Bitácora**: fecha, quién, qué se hizo y qué quedó a medias.
 > - Las reglas permanentes están en [`AGENTS.md`](../AGENTS.md).
 
-**Última actualización:** 2026-11-08, validación en Wi-Fi real entre `PC-A` y `PC-B` y corrección de *pacing*, CBR adaptativo por resolución y cursor a 125 Hz (`v0.0.1-alpha.3`).
+**Última actualización:** 2026-11-08, integración del streaming en `cs-ipc`, `crossscreen-agent`, `crossscreen-viewer` (anuncio mDNS del puerto de sesión) y el panel Tauri (`apps/desktop`).
 
 ## Resumen en una frase
-La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **validada y afinada sobre Wi-Fi real entre dos equipos (60 s a `1366×768@60`: pérdidas reducidas de 31 a 2 frames, peticiones `RequestKeyframe` de 104 a 1, cursor de 638 a 3 040 posiciones y `Captura→enviado` p50 18,1 / p95 25,6 / máx. 53,2 ms)**.
+La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado → decodificación → presentación con cursor), **validada y afinada sobre Wi-Fi real entre dos equipos (60 s a `1366×768@60`: pérdidas reducidas de 31 a 2 frames, peticiones `RequestKeyframe` de 104 a 1, cursor de 638 a 3 040 posiciones y `Captura→enviado` p50 18,1 / p95 25,6 / máx. 53,2 ms)** e integrada en `crossscreen-agent` y en el panel de escritorio Tauri (`Transmitir pantalla`).
 
 ## Fases (ver `docs/07-roadmap.md`)
 | Fase | Estado |
 |---|---|
 | F0 Fundamentos | ✅ En lo esencial (CI y release funcionando en GitHub) |
 | F1 PoC (Windows) | ✅ PoC-1, 2, 3 y 5; PoC-4 en loopback + pruebas reales Wi-Fi |
-| F2 MVP Windows → Windows | 🟡 Funciona y es estable en Wi-Fi real (`PC-A → PC-B`); falta prueba por cable, estabilidad de 2 h e integración en agente/panel |
+| F2 MVP Windows → Windows | 🟡 Funciona en Wi-Fi real (`PC-A → PC-B`) e integrado en agente + panel Tauri; falta prueba por cable y estabilidad de 2 h |
 | F3 Extender en Windows | 🟡 Adelantada (VDD + CCD funcionando) |
 | F4 Linux | ⏳ No iniciada (no hay equipo Linux para probar) |
 
@@ -61,10 +61,10 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
   - **Fluidez del cursor:** sondeo Win32 (`GetPhysicalCursorPos` + `GetCursorInfo`) a **125 Hz** independiente del codificador, retorno inmediato en `DxgiCapture::next_frame` ante eventos de puntero y deduplicación de `CursorShape`, subiendo de **638** posiciones (`10,6 Hz`) a **3 040** (`50,7 Hz`) y **846–1 122** repintados solo de cursor.
 
 ## Trabajo en curso (2026-11-08)
-Ninguno pendiente en el árbol de trabajo: la validación en Wi-Fi real y las correcciones de *pacing*, CBR adaptativo por resolución, decodificador y cursor a 125 Hz están integradas y documentadas.
+Ninguno pendiente en el árbol de trabajo: el streaming está integrado en `cs-ipc`, `crossscreen-agent`, `crossscreen-viewer` (anuncio mDNS de `session_port`) y en el panel de escritorio Tauri (`apps/desktop/src/views/Stream.tsx`).
 
 ## Próximos pasos (en orden)
-1. Integrar el streaming en `crossscreen-agent` y en el panel Tauri (botón "Transmitir pantalla"; hoy está como "Próximamente").
+1. Probar la transmisión iniciada desde el panel Tauri (`crossscreen-desktop` + `crossscreen-agent`) entre los dos equipos.
 2. Probar **por cable** para separar la latencia de red del Wi-Fi de la del pipeline.
 3. Desactivar el ahorro de energía del Wi-Fi en los dos equipos para reducir los picos ocasionales de RTT (120–236 ms).
 4. **Latencia:**
@@ -96,3 +96,4 @@ Ninguno pendiente en el árbol de trabajo: la validación en Wi-Fi real y las co
 | 2026-11-08 | Dueño + coordinador | **Primera prueba real A → B por Wi-Fi:** funciona, pero con lag y congelaciones por pérdidas en ráfaga. Lanzados 2 agentes de resiliencia (ver "Trabajo en curso"). |
 | 2026-11-08 | Agente integrador | Integración de resiliencia Wi-Fi en receptor (`DecodeThrough`, `KeyframeRequester` calmado, `SeqTracker::note_lost`) y emisor/transporte (FEC IDR 0,5, entrelazado de bloques, `AdaptiveFec`, filtro `<1 RTT`, inyector Gilbert-Elliott y sonda `GradualIntraRefresh`); mediciones documentadas y release `v0.0.1-alpha.2`. |
 | 2026-11-08 | Dueño + agente | **Validación en Wi-Fi real (`PC-A → PC-B`, 60 s, `1366×768@60`):** corregido bloqueo de *pacing* (`paced = total - avail` y `set_rate_at`), escalado CBR por resolución (`8 094 kbps`), tope de ritmo para IDR, sondeo Win32 del cursor a 125 Hz + deduplicación de formas y tamaño inicial en `VideoDecoder`; pérdidas bajan de 31 a 2 frames y `RequestKeyframe` de 104 a 1. |
+| 2026-11-08 | Agente | **Integración de streaming en agente y panel Tauri:** `StartStream`/`StopStream` y eventos/métricas reales en `cs-ipc` (`v1.1`), ejecución de `cs_pipeline::run_sender` con parada ordenada en `crossscreen-agent`, anuncio mDNS de `session_port` en `crossscreen-viewer --listen` y vista «Transmitir pantalla» en `apps/desktop` (con accesos directos desde «Equipos emparejados» y «Red local»). |

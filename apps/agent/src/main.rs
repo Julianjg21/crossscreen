@@ -169,7 +169,7 @@ async fn run(args: Args) -> Result<i32> {
         () = ctrl_c => {}
     }
     tracing::info!("agente detenido");
-    agent.shutdown();
+    agent.shutdown().await;
     drop::<Arc<agent::Agent>>(agent);
     Ok(0)
 }

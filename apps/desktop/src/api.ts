@@ -16,6 +16,9 @@ export interface AgentStatus {
   discovery_active: boolean;
   mdns_available: boolean;
   displays_supported: boolean;
+  streaming_supported: boolean;
+  active_stream: StreamSessionInfo | null;
+  last_stream: StreamReportInfo | null;
   data_dir: string;
   log_file: string | null;
 }
@@ -61,6 +64,56 @@ export interface DisplayInfo {
   modes: ModeInfo[];
 }
 
+export type StreamModeInfo = "extend" | "duplicate";
+
+export interface StreamSessionInfo {
+  peer_name: string;
+  peer_fingerprint: string;
+  peer_fingerprint_short: string;
+  remote_addr: string;
+  mode: StreamModeInfo;
+  mode_override: ModeInfo | null;
+  bitrate_kbps: number;
+  initial_rtt_us: number;
+  started_at: number;
+}
+
+export interface LatencySummary {
+  p50_us: number;
+  p95_us: number;
+  max_us: number;
+  samples: number;
+}
+
+export interface StreamReportInfo {
+  peer_name: string;
+  remote_addr: string;
+  duration_ms: number;
+  end_reason: string;
+  captured_size: [number, number] | null;
+  frames_captured: number;
+  frames_encoded: number;
+  frames_sent: number;
+  dropped_before_encode: number;
+  dropped_after_encode: number;
+  idr_sent: number;
+  keyframe_requests: number;
+  payload_bytes: number;
+  wire_bytes: number;
+  datagrams_sent: number;
+  datagrams_failed: number;
+  cursor_positions: number;
+  cursor_shapes: number;
+  capture_us: LatencySummary | null;
+  encode_us: LatencySummary | null;
+  capture_to_sent_us: LatencySummary | null;
+  receiver_frames_received: number | null;
+  receiver_frames_lost: number | null;
+  receiver_jitter_us: number | null;
+  receiver_decode_us: number | null;
+  error: string | null;
+}
+
 export type Request =
   | { kind: "get_status" }
   | { kind: "get_identity" }
@@ -72,7 +125,16 @@ export type Request =
   | { kind: "start_discovery" }
   | { kind: "list_displays" }
   | { kind: "show_display"; width: number; height: number; hz: number }
-  | { kind: "hide_displays" };
+  | { kind: "hide_displays" }
+  | {
+      kind: "start_stream";
+      addr: string;
+      peer: string;
+      mode: StreamModeInfo;
+      mode_override: ModeInfo | null;
+      bitrate_kbps: number;
+    }
+  | { kind: "stop_stream" };
 
 export type Response =
   | ({ kind: "status" } & AgentStatus)
@@ -84,7 +146,8 @@ export type Response =
   | { kind: "discovered"; devices: DiscoveredDevice[] }
   | { kind: "displays"; displays: DisplayInfo[] }
   | { kind: "display_shown"; gdi_name: string; mode: ModeInfo }
-  | { kind: "displays_hidden"; count: number };
+  | { kind: "displays_hidden"; count: number }
+  | { kind: "stream_started"; session: StreamSessionInfo };
 
 export type PairingOutcome =
   | { outcome: "paired"; peer: PeerInfo }
@@ -97,7 +160,9 @@ export type AgentEvent =
   | ({ kind: "pairing_result" } & PairingOutcome)
   | { kind: "peers_changed" }
   | ({ kind: "device_discovered" } & DiscoveredDevice)
-  | { kind: "device_lost"; fullname: string };
+  | { kind: "device_lost"; fullname: string }
+  | { kind: "stream_started"; session: StreamSessionInfo }
+  | { kind: "stream_ended"; report: StreamReportInfo };
 
 export interface CmdError {
   kind: "agent_unavailable" | "agent_error" | "protocol";

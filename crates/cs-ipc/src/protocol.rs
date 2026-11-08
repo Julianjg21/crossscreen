@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 0 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 1 };
 
 /// Tamaño máximo de una línea (mensaje). Protege al agente frente a clientes
 /// que envían datos sin fin.
@@ -93,6 +93,19 @@ pub enum Request {
         hz: u32,
     },
     HideDisplays,
+    /// Inicia una sesión emisora hacia un receptor (`crossscreen-viewer --listen`).
+    /// `addr` = `IP:puerto`, `peer` = huella completa o prefijo de un par de confianza.
+    StartStream {
+        addr: String,
+        peer: String,
+        mode: StreamModeInfo,
+        /// Resolución y refresco pedidos; `None` usa el modo nativo anunciado por el receptor.
+        mode_override: Option<ModeInfo>,
+        /// Tasa objetivo en kbps (p. ej. 20000).
+        bitrate_kbps: u32,
+    },
+    /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
+    StopStream,
 }
 
 /// Respuestas del agente.
@@ -109,6 +122,7 @@ pub enum Response {
     Displays { displays: Vec<DisplayInfo> },
     DisplayShown { gdi_name: String, mode: ModeInfo },
     DisplaysHidden { count: u32 },
+    StreamStarted { session: StreamSessionInfo },
 }
 
 /// Eventos que el agente difunde a los clientes.
@@ -120,6 +134,8 @@ pub enum Event {
     PeersChanged,
     DeviceDiscovered(DiscoveredDevice),
     DeviceLost { fullname: String },
+    StreamStarted { session: StreamSessionInfo },
+    StreamEnded { report: Box<StreamReportInfo> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +159,9 @@ pub struct AgentStatus {
     /// `false` si el servicio mDNS no pudo arrancar.
     pub mdns_available: bool,
     pub displays_supported: bool,
+    pub streaming_supported: bool,
+    pub active_stream: Option<StreamSessionInfo>,
+    pub last_stream: Option<Box<StreamReportInfo>>,
     pub data_dir: String,
     pub log_file: Option<String>,
 }
@@ -196,6 +215,66 @@ pub struct DisplayInfo {
     pub gdi_name: Option<String>,
     /// Modos anunciados (solo para monitores virtuales activos).
     pub modes: Vec<ModeInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamModeInfo {
+    Extend,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamSessionInfo {
+    pub peer_name: String,
+    pub peer_fingerprint: String,
+    pub peer_fingerprint_short: String,
+    pub remote_addr: String,
+    pub mode: StreamModeInfo,
+    pub mode_override: Option<ModeInfo>,
+    pub bitrate_kbps: u32,
+    /// RTT inicial al conectar (µs).
+    pub initial_rtt_us: u64,
+    /// Segundos desde la época Unix en que se inició la sesión.
+    pub started_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LatencySummary {
+    pub p50_us: u64,
+    pub p95_us: u64,
+    pub max_us: u64,
+    pub samples: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamReportInfo {
+    pub peer_name: String,
+    pub remote_addr: String,
+    pub duration_ms: u64,
+    pub end_reason: String,
+    pub captured_size: Option<(u32, u32)>,
+    pub frames_captured: u64,
+    pub frames_encoded: u64,
+    pub frames_sent: u64,
+    pub dropped_before_encode: u64,
+    pub dropped_after_encode: u64,
+    pub idr_sent: u64,
+    pub keyframe_requests: u64,
+    pub payload_bytes: u64,
+    pub wire_bytes: u64,
+    pub datagrams_sent: u64,
+    pub datagrams_failed: u64,
+    pub cursor_positions: u64,
+    pub cursor_shapes: u64,
+    pub capture_us: Option<LatencySummary>,
+    pub encode_us: Option<LatencySummary>,
+    pub capture_to_sent_us: Option<LatencySummary>,
+    pub receiver_frames_received: Option<u64>,
+    pub receiver_frames_lost: Option<u64>,
+    pub receiver_jitter_us: Option<u32>,
+    pub receiver_decode_us: Option<u32>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +351,18 @@ mod tests {
                 hz: 60,
             },
             Request::HideDisplays,
+            Request::StartStream {
+                addr: "192.168.1.127:47810".into(),
+                peer: "ff81".into(),
+                mode: StreamModeInfo::Extend,
+                mode_override: Some(ModeInfo {
+                    width: 1920,
+                    height: 1080,
+                    refresh_mhz: 60_000,
+                }),
+                bitrate_kbps: 20_000,
+            },
+            Request::StopStream,
         ];
         for (i, r) in reqs.into_iter().enumerate() {
             roundtrip(&ClientMessage::Request {
@@ -359,6 +450,69 @@ mod tests {
                     fullname: "x".into(),
                 },
             },
+            AgentMessage::Response {
+                id: 11,
+                result: Ok(Response::StreamStarted {
+                    session: StreamSessionInfo {
+                        peer_name: "DESKTOP-93VFE2P".into(),
+                        peer_fingerprint: "ff".repeat(32),
+                        peer_fingerprint_short: "ffff-ffff-ffff-ffff".into(),
+                        remote_addr: "192.168.1.127:47810".into(),
+                        mode: StreamModeInfo::Extend,
+                        mode_override: None,
+                        bitrate_kbps: 20_000,
+                        initial_rtt_us: 12_500,
+                        started_at: 1_700_000_100,
+                    },
+                }),
+            },
+            AgentMessage::Event {
+                event: Event::StreamEnded {
+                    report: Box::new(StreamReportInfo {
+                        peer_name: "DESKTOP-93VFE2P".into(),
+                        remote_addr: "192.168.1.127:47810".into(),
+                        duration_ms: 60_000,
+                        end_reason: "detenido por el usuario".into(),
+                        captured_size: Some((1366, 768)),
+                        frames_captured: 1825,
+                        frames_encoded: 1781,
+                        frames_sent: 1781,
+                        dropped_before_encode: 44,
+                        dropped_after_encode: 0,
+                        idr_sent: 4,
+                        keyframe_requests: 1,
+                        payload_bytes: 30_000_000,
+                        wire_bytes: 34_000_000,
+                        datagrams_sent: 25_382,
+                        datagrams_failed: 0,
+                        cursor_positions: 3040,
+                        cursor_shapes: 60,
+                        capture_us: Some(LatencySummary {
+                            p50_us: 240,
+                            p95_us: 400,
+                            max_us: 17_650,
+                            samples: 1825,
+                        }),
+                        encode_us: Some(LatencySummary {
+                            p50_us: 6910,
+                            p95_us: 9920,
+                            max_us: 25_300,
+                            samples: 1781,
+                        }),
+                        capture_to_sent_us: Some(LatencySummary {
+                            p50_us: 18_130,
+                            p95_us: 25_620,
+                            max_us: 53_180,
+                            samples: 1781,
+                        }),
+                        receiver_frames_received: Some(1776),
+                        receiver_frames_lost: Some(2),
+                        receiver_jitter_us: Some(10_663),
+                        receiver_decode_us: Some(681),
+                        error: None,
+                    }),
+                },
+            },
         ];
         for m in &msgs {
             roundtrip(m);
@@ -389,6 +543,9 @@ mod tests {
             discovery_active: false,
             mdns_available: true,
             displays_supported: true,
+            streaming_supported: true,
+            active_stream: None,
+            last_stream: None,
             data_dir: "d".into(),
             log_file: None,
         }))

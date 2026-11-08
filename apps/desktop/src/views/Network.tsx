@@ -13,6 +13,7 @@ interface Props {
   status: AgentStatus;
   onError: (e: unknown) => void;
   onPair: (addr: string) => void;
+  onStream: (peer?: string, addr?: string) => void;
 }
 
 function pairingAddr(d: DiscoveredDevice): string | null {
@@ -23,7 +24,15 @@ function pairingAddr(d: DiscoveredDevice): string | null {
   return v6 ? `[${v6}]:${d.pairing_port}` : null;
 }
 
-export default function Network({ status, onError, onPair }: Props) {
+function streamAddr(d: DiscoveredDevice): string | null {
+  const port = d.session_port > 0 ? d.session_port : 47810;
+  const v4 = d.addresses.find((a) => !a.includes(":"));
+  if (v4) return `${v4}:${port}`;
+  const v6 = d.addresses[0];
+  return v6 ? `[${v6}]:${port}` : null;
+}
+
+export default function Network({ status, onError, onPair, onStream }: Props) {
   const [devices, setDevices] = useState<Map<string, DiscoveredDevice>>(new Map());
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -107,13 +116,18 @@ export default function Network({ status, onError, onPair }: Props) {
         <ul className="device-list" aria-live="polite">
           {list.map((d) => {
             const paired = isPairedDevice(d.device_id, peers);
+            const matchedPeer = peers.find((p) => p.fingerprint.startsWith(d.device_id));
             const addr = pairingAddr(d);
+            const sAddr = streamAddr(d);
             return (
               <li key={d.fullname} className="card device">
                 <div className="device-main">
                   <h2 className="device-name">
                     {d.name}
                     {paired && <span className="badge ok">Emparejado</span>}
+                    {d.session_port > 0 && (
+                      <span className="badge info">Visor en :{d.session_port}</span>
+                    )}
                     {d.pairing_port !== null && (
                       <span className="badge info">Mostrando PIN</span>
                     )}
@@ -122,11 +136,22 @@ export default function Network({ status, onError, onPair }: Props) {
                     {d.addresses.join(", ") || "sin dirección"} · ID <code>{d.device_id.slice(0, 16)}…</code>
                   </p>
                 </div>
-                {addr && !paired && (
-                  <button type="button" className="primary" onClick={() => onPair(addr)}>
-                    Emparejar…
-                  </button>
-                )}
+                <div className="actions">
+                  {paired && matchedPeer && (
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => onStream(matchedPeer.fingerprint, sAddr ?? undefined)}
+                    >
+                      Transmitir…
+                    </button>
+                  )}
+                  {addr && !paired && (
+                    <button type="button" className="primary" onClick={() => onPair(addr)}>
+                      Emparejar…
+                    </button>
+                  )}
+                </div>
               </li>
             );
           })}

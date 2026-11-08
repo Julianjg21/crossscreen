@@ -5,6 +5,7 @@ import {
   errorMessage,
   isUnavailable,
   onAgentDisconnected,
+  onAgentEvent,
   type AgentInfo,
   type AgentStatus,
 } from "./api";
@@ -13,8 +14,9 @@ import Peers from "./views/Peers";
 import Pair from "./views/Pair";
 import Network from "./views/Network";
 import VirtualMonitor from "./views/VirtualMonitor";
+import Stream from "./views/Stream";
 
-type ViewId = "device" | "peers" | "pair" | "network" | "monitor";
+type ViewId = "device" | "peers" | "pair" | "network" | "monitor" | "stream";
 
 const NAV: { id: ViewId; label: string }[] = [
   { id: "device", label: "Este equipo" },
@@ -22,6 +24,7 @@ const NAV: { id: ViewId; label: string }[] = [
   { id: "pair", label: "Emparejar" },
   { id: "network", label: "Red local" },
   { id: "monitor", label: "Monitor virtual" },
+  { id: "stream", label: "Transmitir pantalla" },
 ];
 
 type Conn =
@@ -34,12 +37,18 @@ export default function App() {
   const [view, setView] = useState<ViewId>("device");
   const [starting, setStarting] = useState(false);
   const [pairTarget, setPairTarget] = useState<string | null>(null);
+  const [streamTarget, setStreamTarget] = useState<{
+    peer?: string;
+    addr?: string;
+  } | null>(null);
+  const [streamingLive, setStreamingLive] = useState(false);
 
   const connect = useCallback(async (start = false) => {
     setConn({ state: "connecting" });
     try {
       const info = start ? await agent.start() : await agent.connect();
       const status = await call({ kind: "get_status" }, "status");
+      setStreamingLive(status.active_stream !== null);
       setConn({ state: "connected", info, status });
     } catch (e) {
       setConn({ state: "unavailable", message: errorMessage(e) });
@@ -48,11 +57,19 @@ export default function App() {
 
   useEffect(() => {
     void connect();
-    const un = onAgentDisconnected(() =>
+    const unDisc = onAgentDisconnected(() =>
       setConn({ state: "unavailable", message: "Se perdió la conexión con el agente." }),
     );
+    const unEv = onAgentEvent((ev) => {
+      if (ev.kind === "stream_started") {
+        setStreamingLive(true);
+      } else if (ev.kind === "stream_ended") {
+        setStreamingLive(false);
+      }
+    });
     return () => {
-      void un.then((f) => f());
+      void unDisc.then((f) => f());
+      void unEv.then((f) => f());
     };
   }, [connect]);
 
@@ -74,6 +91,11 @@ export default function App() {
     setView("pair");
   };
 
+  const goStream = (peer?: string, addr?: string) => {
+    setStreamTarget({ peer, addr });
+    setView("stream");
+  };
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -92,15 +114,11 @@ export default function App() {
                   disabled={conn.state !== "connected"}
                   onClick={() => setView(n.id)}
                 >
-                  {n.label}
+                  <span>{n.label}</span>
+                  {n.id === "stream" && streamingLive && <span className="badge ok">En vivo</span>}
                 </button>
               </li>
             ))}
-            <li>
-              <button type="button" className="nav-item" disabled aria-disabled="true">
-                Transmitir pantalla <span className="badge muted">Próximamente</span>
-              </button>
-            </li>
           </ul>
         </nav>
         <div className="agent-status" role="status" aria-live="polite">
@@ -137,7 +155,7 @@ export default function App() {
         {conn.state === "connected" && (
           <>
             {view === "device" && <ThisDevice status={conn.status} onError={onError} />}
-            {view === "peers" && <Peers onError={onError} />}
+            {view === "peers" && <Peers onError={onError} onStream={(peer) => goStream(peer)} />}
             {view === "pair" && (
               <Pair
                 onError={onError}
@@ -146,9 +164,23 @@ export default function App() {
               />
             )}
             {view === "network" && (
-              <Network status={conn.status} onError={onError} onPair={goPair} />
+              <Network
+                status={conn.status}
+                onError={onError}
+                onPair={goPair}
+                onStream={goStream}
+              />
             )}
             {view === "monitor" && <VirtualMonitor status={conn.status} onError={onError} />}
+            {view === "stream" && (
+              <Stream
+                status={conn.status}
+                onError={onError}
+                initialPeer={streamTarget?.peer ?? null}
+                initialAddr={streamTarget?.addr ?? null}
+                onConsumeInitial={() => setStreamTarget(null)}
+              />
+            )}
           </>
         )}
       </main>

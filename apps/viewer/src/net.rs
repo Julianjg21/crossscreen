@@ -334,6 +334,32 @@ async fn run(
     };
     let endpoint = Endpoint::server(cfg.bind, identity.clone(), policy, ALPN)
         .with_context(|| format!("escuchando en {}", cfg.bind))?;
+    let local_addr = endpoint.local_addr()?;
+    let _mdns = match cs_discovery::Discovery::new() {
+        Ok(mut d) => {
+            let a = cs_discovery::Announcement {
+                device_id: identity.fingerprint().device_id(),
+                name: std::env::var("COMPUTERNAME")
+                    .or_else(|_| std::env::var("HOSTNAME"))
+                    .unwrap_or_else(|_| "crossscreen-viewer".into()),
+                roles: Roles {
+                    source: false,
+                    sink: true,
+                },
+                protocol_major: PROTOCOL_VERSION.major,
+                session_port: local_addr.port(),
+                pairing_port: None,
+            };
+            if let Err(e) = d.announce(&a) {
+                tracing::warn!("no se pudo anunciar el visor por mDNS: {e}");
+            }
+            Some(d)
+        }
+        Err(e) => {
+            tracing::warn!("mDNS no disponible en el visor: {e}");
+            None
+        }
+    };
     let trust_path = cfg.data_dir.join("trusted-peers.json");
     let current_trust = || -> Result<Vec<cs_security::Fingerprint>> {
         Ok(TrustStore::open(&trust_path)
@@ -342,7 +368,7 @@ async fn run(
     };
     println!(
         "crossscreen-viewer escuchando en UDP {} (huella {}, {} par(es) de confianza); native_mode {}x{}@{:.2} Hz, {} dpi",
-        endpoint.local_addr()?,
+        local_addr,
         identity.fingerprint().short(),
         trust.fingerprints().len(),
         cfg.native_mode.width,

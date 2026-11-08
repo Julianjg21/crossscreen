@@ -16,6 +16,7 @@ cs-core.workspace = true
 cs-protocol.workspace = true
 cs-security.workspace = true
 cs-transport.workspace = true
+cs-discovery.workspace = true
 cs-decode = { path = "../../crates/cs-decode" }
 cs-render = { path = "../../crates/cs-render" }
 anyhow.workspace = true

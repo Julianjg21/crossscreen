@@ -3,6 +3,7 @@ import { call, errorMessage, onAgentEvent, type PeerInfo } from "../api";
 
 interface Props {
   onError: (e: unknown) => void;
+  onStream: (fingerprint: string) => void;
 }
 
 function formatDate(secs: number): string {
@@ -10,7 +11,7 @@ function formatDate(secs: number): string {
   return new Date(secs * 1000).toLocaleString("es");
 }
 
-export default function Peers({ onError }: Props) {
+export default function Peers({ onError, onStream }: Props) {
   const [peers, setPeers] = useState<PeerInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -111,16 +112,25 @@ export default function Peers({ onError }: Props) {
                       </button>
                     </>
                   ) : (
-                    <button
-                      type="button"
-                      aria-label={`Olvidar ${p.name}`}
-                      onClick={() => {
-                        setNotice(null);
-                        setConfirming(p.fingerprint);
-                      }}
-                    >
-                      Olvidar
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={() => onStream(p.fingerprint)}
+                      >
+                        Transmitir…
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Olvidar ${p.name}`}
+                        onClick={() => {
+                          setNotice(null);
+                          setConfirming(p.fingerprint);
+                        }}
+                      >
+                        Olvidar
+                      </button>
+                    </>
                   )}
                 </td>
               </tr>

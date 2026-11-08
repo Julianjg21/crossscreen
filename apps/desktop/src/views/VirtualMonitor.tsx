@@ -126,8 +126,8 @@ export default function VirtualMonitor({ status, onError }: Props) {
       <h1 id="h-mon">Monitor virtual</h1>
       <p className="lead">
         Añade al escritorio de este equipo un monitor que Windows trata como real (aparece en
-        Configuración de pantalla). Enviar su imagen a otro equipo aún no está disponible
-        (próximamente).
+        Configuración de pantalla). Para enviar su imagen en vivo a otro equipo emparejado, usa la
+        sección «Transmitir pantalla».
       </p>
       <div aria-live="polite">{notice && <p className="alert ok">{notice}</p>}</div>
       {error && (

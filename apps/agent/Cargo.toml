@@ -19,6 +19,7 @@ cs-transport.workspace = true
 cs-discovery.workspace = true
 cs-display.workspace = true
 cs-ipc.workspace = true
+cs-pipeline = { path = "../../crates/cs-pipeline" }
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["signal"] }
