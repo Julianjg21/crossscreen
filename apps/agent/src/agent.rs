@@ -282,6 +282,7 @@ impl Agent {
                 clipboard,
             } => self.start_receiver(port, fullscreen, clipboard).await,
             Request::StopReceiver => self.stop_receiver().await,
+            Request::Shutdown => self.handle_shutdown_request().await,
         }
     }
 
@@ -297,7 +298,7 @@ impl Agent {
         };
         let active_receiver = self.receiver.lock().await.as_ref().map(|r| r.info.clone());
         AgentStatus {
-            agent_version: env!("CARGO_PKG_VERSION").into(),
+            agent_version: cs_ipc::agent_version_string(),
             ipc_version: IPC_VERSION,
             platform: std::env::consts::OS.into(),
             pairing_port,
@@ -746,6 +747,29 @@ impl Agent {
             agent.emit(Event::StreamEnded { report });
         });
         Ok(Response::StreamStarted { session })
+    }
+
+    /// Termina el agente si no hay sesiones activas (lo usa el panel para
+    /// sustituir un agente de otra build por el suyo).
+    async fn handle_shutdown_request(self: &Arc<Self>) -> Result<Response, IpcError> {
+        let streaming = self.stream.lock().await.active.is_some();
+        let receiving = self.receiver.lock().await.is_some();
+        if streaming || receiving {
+            return Err(err(
+                ErrorCode::Busy,
+                "Hay una transmisión o recepción en curso; detenla antes de reiniciar el agente",
+            ));
+        }
+        tracing::info!("cierre del agente pedido por un cliente IPC");
+        // Responder antes de salir: el cliente recibe el Ok. Luego se retira
+        // el anuncio mDNS (limpieza normal de cierre) y termina el proceso.
+        let me = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            me.shutdown().await;
+            std::process::exit(0);
+        });
+        Ok(Response::Ok)
     }
 
     async fn stop_stream(&self) -> Result<Response, IpcError> {

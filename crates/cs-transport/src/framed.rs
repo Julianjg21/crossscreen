@@ -11,6 +11,7 @@ pub struct FramedStream {
     recv: quinn::RecvStream,
     decoder: FrameDecoder,
     buf: Box<[u8]>,
+    unknown_skipped: u64,
 }
 
 impl FramedStream {
@@ -20,7 +21,13 @@ impl FramedStream {
             recv,
             decoder: FrameDecoder::new(),
             buf: vec![0u8; 16 * 1024].into_boxed_slice(),
+            unknown_skipped: 0,
         }
+    }
+
+    /// Mensajes recibidos que no se pudieron interpretar y se ignoraron.
+    pub fn unknown_skipped(&self) -> u64 {
+        self.unknown_skipped
     }
 
     pub async fn send<T: Serialize>(&mut self, msg: &T) -> Result<(), TransportError> {
@@ -30,10 +37,27 @@ impl FramedStream {
     }
 
     /// Siguiente mensaje; `Ok(None)` si el par cerró el stream limpiamente.
+    ///
+    /// Los mensajes que no se pueden interpretar (p. ej. variantes nuevas de
+    /// un par con una versión posterior del protocolo) **se ignoran** con un
+    /// aviso en el log, en lugar de cortar la sesión.
     pub async fn recv<T: DeserializeOwned>(&mut self) -> Result<Option<T>, TransportError> {
         loop {
-            if let Some(msg) = self.decoder.next_frame()? {
-                return Ok(Some(msg));
+            match self.decoder.next_frame() {
+                Ok(Some(msg)) => return Ok(Some(msg)),
+                Ok(None) => {}
+                Err(framing::FramingError::UnknownMessage { len, source }) => {
+                    self.unknown_skipped += 1;
+                    if self.unknown_skipped <= 5 || self.unknown_skipped.is_power_of_two() {
+                        tracing::warn!(
+                            len,
+                            total = self.unknown_skipped,
+                            "mensaje de control desconocido ignorado ({source}); ¿versiones distintas en cada equipo?"
+                        );
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
             }
             match self.recv.read(&mut self.buf).await? {
                 Some(n) => self.decoder.push(&self.buf[..n]),

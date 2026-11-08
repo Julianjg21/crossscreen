@@ -21,7 +21,29 @@ pub struct ProtocolVersion {
     pub minor: u16,
 }
 
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 1 };
+/// Historial de versiones menores (compatibles entre sí; los mensajes que un
+/// par no conoce se ignoran, ver `framing::FramingError::UnknownMessage`):
+/// - 0.1: MVP (vídeo, control, cursor).
+/// - 0.2: entrada remota (`ControlMessage::Input`, F6).
+/// - 0.3: portapapeles de texto (`ControlMessage::ClipboardText`, F7).
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
+
+impl ProtocolVersion {
+    /// Funciones que se pierden al hablar con un par de versión menor más
+    /// antigua (para avisar al usuario en vez de fallar en silencio).
+    pub fn missing_features_in(&self, peer: &ProtocolVersion) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        if self.major == peer.major {
+            if peer.minor < 2 && self.minor >= 2 {
+                v.push("entrada remota (ratón y teclado)");
+            }
+            if peer.minor < 3 && self.minor >= 3 {
+                v.push("portapapeles");
+            }
+        }
+        v
+    }
+}
 
 impl ProtocolVersion {
     pub fn is_compatible_with(&self, other: &ProtocolVersion) -> bool {

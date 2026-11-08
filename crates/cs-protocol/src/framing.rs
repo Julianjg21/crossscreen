@@ -16,6 +16,16 @@ pub enum FramingError {
     TooLarge(usize),
     #[error("error de serialización: {0}")]
     Codec(#[from] postcard::Error),
+    /// Mensaje completo y bien enmarcado que este programa no sabe interpretar
+    /// (p. ej. una variante nueva de una versión posterior del par). Ya se ha
+    /// descartado del búfer: **el canal sigue sincronizado** y el llamante
+    /// puede ignorarlo y seguir leyendo.
+    #[error("mensaje desconocido ignorado ({len} bytes): {source}")]
+    UnknownMessage {
+        len: usize,
+        #[source]
+        source: postcard::Error,
+    },
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, FramingError> {
@@ -46,7 +56,11 @@ impl FrameDecoder {
     }
 
     /// Devuelve el siguiente mensaje completo, `Ok(None)` si faltan bytes.
-    /// Tras un error el stream debe cerrarse: el decodificador queda desincronizado.
+    ///
+    /// - [`FramingError::UnknownMessage`]: el mensaje se descartó y el
+    ///   decodificador sigue sincronizado; se puede volver a llamar
+    ///   (compatibilidad con pares de versiones posteriores).
+    /// - [`FramingError::TooLarge`]: el stream debe cerrarse (desincronizado).
     pub fn next_frame<T: DeserializeOwned>(&mut self) -> Result<Option<T>, FramingError> {
         if self.buf.len() < LEN_PREFIX {
             return Ok(None);
@@ -58,9 +72,13 @@ impl FrameDecoder {
         if self.buf.len() < LEN_PREFIX + len {
             return Ok(None);
         }
-        let msg = postcard::from_bytes(&self.buf[LEN_PREFIX..LEN_PREFIX + len])?;
+        let result = postcard::from_bytes(&self.buf[LEN_PREFIX..LEN_PREFIX + len]);
+        // El marco se consume siempre: un mensaje ilegible no desincroniza el canal.
         self.buf.drain(..LEN_PREFIX + len);
-        Ok(Some(msg))
+        match result {
+            Ok(msg) => Ok(Some(msg)),
+            Err(source) => Err(FramingError::UnknownMessage { len, source }),
+        }
     }
 }
 
@@ -105,6 +123,37 @@ mod tests {
             out.push(m);
         }
         assert_eq!(out, msgs);
+    }
+
+    /// Reproduce el fallo real de la prueba entre equipos: un visor nuevo
+    /// envió `ControlMessage::Input` a un emisor viejo que no conocía esa
+    /// variante, y la sesión se cortaba. Ahora el mensaje se descarta y el
+    /// canal sigue sincronizado.
+    #[test]
+    fn unknown_variant_from_newer_peer_is_skipped_and_stream_stays_in_sync() {
+        #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+        enum OldMsg {
+            Ping(u32),
+            Bye,
+        }
+        #[derive(serde::Serialize)]
+        enum NewMsg {
+            Ping(u32),
+            Bye,
+            Input { x: u16, y: u16 },
+        }
+        let mut wire = encode(&NewMsg::Input { x: 1, y: 2 }).unwrap();
+        wire.extend(encode(&NewMsg::Ping(7)).unwrap());
+        wire.extend(encode(&NewMsg::Bye).unwrap());
+        let mut dec = FrameDecoder::new();
+        dec.push(&wire);
+        assert!(matches!(
+            dec.next_frame::<OldMsg>(),
+            Err(FramingError::UnknownMessage { .. })
+        ));
+        assert_eq!(dec.next_frame::<OldMsg>().unwrap(), Some(OldMsg::Ping(7)));
+        assert_eq!(dec.next_frame::<OldMsg>().unwrap(), Some(OldMsg::Bye));
+        assert_eq!(dec.next_frame::<OldMsg>().unwrap(), None);
     }
 
     #[test]

@@ -24,7 +24,21 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 1 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 2 };
+
+/// Identificador de la compilación (`git describe`), inyectado con la variable
+/// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
+/// `scripts/package-windows.ps1`); `"dev"` en compilaciones locales sin ella.
+/// Sirve para detectar que el panel habla con un agente de **otra** build.
+pub const BUILD_ID: &str = match option_env!("CROSSSCREEN_BUILD_ID") {
+    Some(s) => s,
+    None => "dev",
+};
+
+/// Versión que anuncia el agente: `<versión del paquete>+<build>`.
+pub fn agent_version_string() -> String {
+    format!("{}+{}", env!("CARGO_PKG_VERSION"), BUILD_ID)
+}
 
 /// Tamaño máximo de una línea (mensaje). Protege al agente frente a clientes
 /// que envían datos sin fin.
@@ -122,6 +136,9 @@ pub enum Request {
     },
     /// Detiene el visor receptor en curso (si lo hay).
     StopReceiver,
+    /// Pide al agente que termine (p. ej. para sustituirlo por el de otra
+    /// build). Falla con `Busy` si hay una transmisión o recepción en curso.
+    Shutdown,
 }
 
 /// Respuestas del agente.
@@ -420,6 +437,7 @@ mod tests {
                 clipboard: false,
             },
             Request::StopReceiver,
+            Request::Shutdown,
         ];
         for (i, r) in reqs.into_iter().enumerate() {
             roundtrip(&ClientMessage::Request {

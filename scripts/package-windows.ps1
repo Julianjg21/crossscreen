@@ -29,6 +29,16 @@ if (-not $NoBuild) {
   if ($LASTEXITCODE -ne 0) { Pop-Location; throw "npm run build falló" }
   Pop-Location
 
+  # Identificador de build: el agente lo anuncia y el panel lo compara para
+  # no usar por error un agente de otra versión (ver cs_ipc::BUILD_ID).
+  if ($env:GITHUB_SHA) {
+    $env:CROSSSCREEN_BUILD_ID = "$($env:GITHUB_REF_NAME)-$($env:GITHUB_SHA.Substring(0, 7))"
+  } else {
+    $env:CROSSSCREEN_BUILD_ID = (git describe --tags --always --dirty 2>$null)
+    if (-not $env:CROSSSCREEN_BUILD_ID) { $env:CROSSSCREEN_BUILD_ID = "local" }
+  }
+  "Build: $env:CROSSSCREEN_BUILD_ID"
+
   cargo build --release -p crossscreen-cli -p crossscreen-viewer -p crossscreen-helper -p crossscreen-agent
   if ($LASTEXITCODE -ne 0) { throw "cargo build falló" }
   cargo build --release -p crossscreen-desktop --features custom-protocol

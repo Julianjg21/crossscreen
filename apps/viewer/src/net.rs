@@ -491,6 +491,17 @@ async fn session(
         "fuente: «{}» ({}), protocolo {}.{}",
         h.device_name, h.device_id, h.version.major, h.version.minor
     );
+    let missing = PROTOCOL_VERSION.missing_features_in(&h.version);
+    if !missing.is_empty() {
+        let msg = format!(
+            "la fuente tiene una versión más antigua del protocolo ({}.{}); sin: {}. Actualízala a la misma versión.",
+            h.version.major,
+            h.version.minor,
+            missing.join(", ")
+        );
+        println!("AVISO: {msg}");
+        tracing::warn!("{msg}");
+    }
     // 2. Hello propio.
     ctl.send(&ControlMessage::Hello(Hello {
         version: PROTOCOL_VERSION,

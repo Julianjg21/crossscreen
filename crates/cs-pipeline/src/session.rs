@@ -111,6 +111,17 @@ pub(crate) async fn run(
         "Receptor: '{}' ({}) protocolo {}.{}",
         peer.device_name, peer.device_id, peer.version.major, peer.version.minor
     );
+    let missing = PROTOCOL_VERSION.missing_features_in(&peer.version);
+    if !missing.is_empty() {
+        let msg = format!(
+            "el receptor tiene una versión más antigua del protocolo ({}.{}); sin: {}. Actualízalo a la misma versión.",
+            peer.version.major,
+            peer.version.minor,
+            missing.join(", ")
+        );
+        println!("AVISO: {msg}");
+        tracing::warn!("{msg}");
+    }
     let sink: SinkCapabilities = loop {
         match recv_msg(&mut ctl, "SinkCapabilities").await? {
             ControlMessage::SinkCapabilities(c) => break c,

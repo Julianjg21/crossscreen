@@ -102,10 +102,51 @@ async fn try_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInfo, Cmd
     })
 }
 
+/// Sustituye un agente de **otra build** por el que acompaña a este panel.
+///
+/// Caso real: un agente viejo seguía en marcha, el panel nuevo se conectó a
+/// él y el emisor no entendía los mensajes de entrada remota del visor (se
+/// cortaba la sesión al mover el ratón). Solo se hace si hay un agente propio
+/// junto al panel para arrancar; si el viejo está transmitiendo, se informa.
+async fn replace_stale_agent(
+    app: &AppHandle,
+    conn: &AgentConn,
+    old_version: &str,
+) -> Result<AgentInfo, CmdError> {
+    let expected = cs_ipc::agent_version_string();
+    let c = client(app, conn).await?;
+    match c.request(Request::Shutdown).await {
+        Ok(_) => {}
+        Err(e) => return Err(CmdError::unavailable(format!(
+            "El agente en ejecución es de otra versión ({old_version}; este panel es {expected}) \
+                 y no se pudo reiniciar: {e}"
+        ))),
+    }
+    *conn.client.lock().await = None;
+    drop(c);
+    // El agente viejo termina ~300 ms después de responder.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let info = spawn_and_connect(app, conn).await?;
+    if info.agent_version != expected {
+        return Err(CmdError::unavailable(format!(
+            "Sigue respondiendo un agente de otra versión ({}). Ciérralo desde el Administrador \
+             de tareas (crossscreen-agent.exe) y vuelve a intentarlo.",
+            info.agent_version
+        )));
+    }
+    Ok(info)
+}
+
 #[tauri::command]
 async fn agent_connect(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
     match try_connect(&app, &conn).await {
-        Ok(info) => Ok(info),
+        Ok(info) => {
+            if info.agent_version != cs_ipc::agent_version_string() && find_agent().is_some() {
+                replace_stale_agent(&app, &conn, &info.agent_version).await
+            } else {
+                Ok(info)
+            }
+        }
         Err(first_err) => {
             if find_agent().is_some() {
                 spawn_and_connect(&app, &conn).await

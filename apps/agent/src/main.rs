@@ -138,14 +138,9 @@ async fn run(args: Args) -> Result<i32> {
                     Ok(stream) => {
                         let agent = agent.clone();
                         let events = agent.subscribe();
+                        let version = cs_ipc::agent_version_string();
                         tokio::spawn(async move {
-                            cs_ipc::serve_connection(
-                                stream,
-                                agent,
-                                events,
-                                env!("CARGO_PKG_VERSION"),
-                            )
-                            .await;
+                            cs_ipc::serve_connection(stream, agent, events, &version).await;
                         });
                     }
                     Err(e) => {
