@@ -1,0 +1,25 @@
+[package]
+name = "cs-clipboard"
+description = "Sincronización bidireccional del portapapeles de texto (F7) con prevención de bucles y backend Win32"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cs-protocol.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
+] }
+
+[lints]
+workspace = true

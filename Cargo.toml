@@ -20,6 +20,7 @@ members = [
     "apps/desktop/src-tauri",
     "crates/cs-pipeline",
     "crates/cs-input",
+    "crates/cs-clipboard",
 ]
 
 [workspace.package]
