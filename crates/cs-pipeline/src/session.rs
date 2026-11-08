@@ -415,8 +415,8 @@ pub(crate) async fn run(
                                 let target_rect = ScreenRect {
                                     x: rect.left,
                                     y: rect.top,
-                                    width: rect.width() as i32,
-                                    height: rect.height() as i32,
+                                    width: rect.width(),
+                                    height: rect.height(),
                                 };
                                 match injector.inject(&ev, target_rect) {
                                     Ok(()) => cs.input_events_injected += 1,
