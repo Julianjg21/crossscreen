@@ -46,12 +46,17 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # Los crates de captura, codificación, visor y panel aún son solo de Windows.
+      - name: Dependencias del sistema (ventana X11/Wayland)
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev
+      # Captura, codificación y panel aún son solo de Windows; el receptor
+      # (visor + OpenH264 + wgpu) y la CLI ya compilan en Linux.
       - name: Clippy y tests
         run: |
           PKGS="-p cs-core -p cs-protocol -p cs-security -p cs-transport -p cs-discovery -p cs-session -p cs-ipc"
-          cargo clippy $PKGS --all-targets
+          VIEWER="-p cs-decode -p cs-render -p crossscreen-viewer -p crossscreen-cli"
+          cargo clippy $PKGS $VIEWER --all-targets -- -D warnings
           cargo test $PKGS
+          cargo test -p cs-render
 
   licenses:
     name: Licencias y advisories (cargo-deny)

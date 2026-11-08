@@ -176,10 +176,14 @@ pub struct SessionStats {
     pub frames_decoded: u64,
     pub decode_errors: u64,
     pub dropped_waiting_idr: u64,
+    /// P-frames saltados porque llevaban demasiado en cola (latencia acotada).
+    pub dropped_for_lag: u64,
     /// Veces que el MFT dejó de producir salida (tratadas como error).
     pub decode_stalls: u64,
     pub mailbox_replaced: u64,
     pub decode: LatencyStats,
+    /// Espera de la AU en la cola antes de empezar a decodificarla.
+    pub decode_queue_wait: LatencyStats,
     /// Política tras pérdida (para el informe).
     pub loss_policy: LossPolicy,
     /// Frames decodificados con referencias rotas (con `DecodeThrough`).
@@ -242,7 +246,8 @@ impl SessionStats {
             self.video_size.1,
             match self.zero_copy {
                 Some(true) => "sí",
-                Some(false) => "no (copia GPU→GPU)",
+                Some(false) if cfg!(windows) => "no (copia GPU→GPU)",
+                Some(false) => "no (frames decodificados en CPU y subidos a la GPU)",
                 None => "sin frames",
             }
         );
@@ -258,7 +263,7 @@ impl SessionStats {
             self.decode_queue_overflows
         );
         println!(
-            "decodificación ({}): {} frames ({} con referencias rotas), {} errores, {} atascos, {} descartados esperando IDR, {} sustituidos en el buzón sin presentar",
+            "decodificación ({}): {} frames ({} con referencias rotas), {} errores, {} atascos, {} descartados esperando IDR, {} saltados por retraso en cola, {} sustituidos en el buzón sin presentar",
             match self.loss_policy {
                 LossPolicy::DecodeThrough => "decodificar a través de la pérdida",
                 LossPolicy::FreezeOnLoss => "congelar hasta IDR",
@@ -268,6 +273,7 @@ impl SessionStats {
             self.decode_errors,
             self.decode_stalls,
             self.dropped_waiting_idr,
+            self.dropped_for_lag,
             self.mailbox_replaced,
         );
         println!(
@@ -326,7 +332,18 @@ impl SessionStats {
             Some(sum) => println!("{name:<44} {sum}"),
             None => println!("{name:<44} (sin datos)"),
         };
-        line("decode (AU→salida del MFT, CPU)", &self.decode);
+        line(
+            "espera en cola antes de decodificar",
+            &self.decode_queue_wait,
+        );
+        line(
+            if cfg!(windows) {
+                "decode (AU→salida del MFT, CPU)"
+            } else {
+                "decode (OpenH264, CPU)"
+            },
+            &self.decode,
+        );
         line(
             "presentación (decodificado→Present devuelto)",
             &self.present,

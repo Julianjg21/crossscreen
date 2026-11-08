@@ -23,6 +23,12 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Dxgi_Common",
 ] }
 
+# Fuera de Windows: decodificación por software con OpenH264. Se carga en
+# tiempo de ejecución el binario oficial de Cisco (licencia de patentes de
+# H.264 cubierta por Cisco); el crate verifica su hash SHA-256.
+[target.'cfg(not(windows))'.dependencies]
+openh264 = { version = "0.9", default-features = false, features = ["libloading"] }
+
 [dev-dependencies]
 anyhow.workspace = true
 

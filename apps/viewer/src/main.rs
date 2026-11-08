@@ -18,28 +18,22 @@
 //!                    [--freeze-on-loss] [--keyframe-policy calm|legacy]
 //! ```
 
+// El modo `--file` usa D3D11 directamente: solo Windows por ahora. El modo
+// `--listen` (receptor) funciona en Windows y en Linux (ver `platform`).
 #[cfg(windows)]
 mod app;
-#[cfg(windows)]
 mod clock;
-#[cfg(windows)]
 mod decode_worker;
-#[cfg(windows)]
 mod listen;
-#[cfg(windows)]
 mod net;
-#[cfg(windows)]
+mod platform;
 mod session;
 
-#[cfg(windows)]
 use clap::Parser;
-#[cfg(windows)]
 use std::net::SocketAddr;
-#[cfg(windows)]
 use std::path::PathBuf;
 
 /// Visor de CrossScreen: reproduce un fichero o recibe un flujo en vivo.
-#[cfg(windows)]
 #[derive(Debug, Parser)]
 #[command(
     name = "crossscreen-viewer",
@@ -121,7 +115,6 @@ pub struct Args {
     pub clipboard: bool,
 }
 
-#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -130,20 +123,15 @@ fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
     if args.listen.is_some() {
-        listen::main(args)
-    } else {
-        app::main(args)
+        return listen::main(args);
     }
-}
-
-#[cfg(not(windows))]
-fn main() {
-    eprintln!("crossscreen-viewer: por ahora solo hay backend para Windows (Linux: VAAPI + DMA-BUF pendiente)");
-    std::process::exit(2);
+    #[cfg(windows)]
+    return app::main(args);
+    #[cfg(not(windows))]
+    anyhow::bail!("--file solo está disponible en Windows por ahora; en Linux usa --listen")
 }
 
 /// `ANCHOxALTO` → `(ancho, alto)`.
-#[cfg(windows)]
 pub fn parse_size(s: &str) -> anyhow::Result<(u32, u32)> {
     let (w, h) = s
         .split_once('x')
@@ -152,7 +140,6 @@ pub fn parse_size(s: &str) -> anyhow::Result<(u32, u32)> {
 }
 
 /// Guarda RGBA8 como PNG (verificación con `--screenshot`).
-#[cfg(windows)]
 pub fn save_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
     let file = std::fs::File::create(path)?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);

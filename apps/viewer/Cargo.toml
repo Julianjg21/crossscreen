@@ -40,5 +40,16 @@ windows = { version = "0.58", features = [
     "Win32_System_Performance",
 ] }
 
+# Linux: backends de ventanas de winit (Wayland con decoraciones propias sin
+# título, que no incrusta fuentes, y X11).
+[target.'cfg(not(windows))'.dependencies]
+winit = { version = "0.30", default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+    "wayland-csd-adwaita-notitle",
+] }
+
 [lints]
 workspace = true

@@ -35,19 +35,20 @@ use cs_decode::VideoDecoder;
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use winit::event_loop::EventLoopProxy;
 
 /// AU seguidas entregadas al MFT sin que salga ningún frame a partir de las
 /// cuales se considera que el decodificador se ha atascado (con baja
 /// latencia y sin B-frames sale un frame por AU).
 const STALL_INPUTS: u32 = 8;
+/// Espera máxima de una AU en cola antes de saltar hasta el siguiente IDR.
+const MAX_QUEUE_LAG: Duration = Duration::from_millis(250);
 
 /// Lo que necesita el hilo.
 pub struct Worker {
-    pub device: ID3D11Device,
+    pub device: crate::platform::VideoContext,
     pub initial_size: Option<(u32, u32)>,
     pub input: Receiver<DecodeInput>,
     pub mailbox: Arc<Mailbox>,
@@ -138,6 +139,26 @@ pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
                 let key = frame.keyframe || is_idr(&frame.data);
                 if need_idr && !key {
                     stats(&mut |s| s.dropped_waiting_idr += 1);
+                    signal(KeyframeSignal::Needed {
+                        lost_seq: frame.frame_seq,
+                    });
+                    continue;
+                }
+                let queue_wait = received_at.elapsed();
+                stats(&mut |s| s.decode_queue_wait.record(queue_wait));
+                // Latencia acotada: si el decodificador no da abasto (p. ej.
+                // OpenH264 por software en un equipo lento), la cola crece y con
+                // ella la latencia sin límite. Se descartan los P-frames
+                // atrasados hasta el siguiente IDR, que se pide ya: mejor un
+                // salto que un retraso creciente. Los IDR siempre se decodifican.
+                if !key && queue_wait > MAX_QUEUE_LAG {
+                    tracing::debug!(
+                        "frame {} lleva {:.0} ms en cola: se salta hasta el próximo IDR",
+                        frame.frame_seq,
+                        queue_wait.as_secs_f64() * 1e3
+                    );
+                    stats(&mut |s| s.dropped_for_lag += 1);
+                    need_idr = true;
                     signal(KeyframeSignal::Needed {
                         lost_seq: frame.frame_seq,
                     });

@@ -134,6 +134,7 @@ pub async fn next_outgoing(bridge: &mut Option<ClipboardBridge>) -> Option<Clipb
 }
 
 /// Espera hasta `poll` a que llegue un texto remoto. `Err(())` si se cerró.
+#[cfg_attr(not(windows), allow(dead_code))] // solo la usa el hilo de Windows (y los tests)
 fn wait_remote(slot: &Slot, poll: Duration) -> Result<Option<ClipboardText>, ()> {
     let guard = slot.state.lock().map_err(|_| ())?;
     let (mut guard, _) = slot

@@ -23,5 +23,10 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
 ] }
 
+# Fuera de Windows: presentación con wgpu (Vulkan/GL en Linux).
+[target.'cfg(not(windows))'.dependencies]
+wgpu = "25"
+pollster = "0.4"
+
 [lints]
 workspace = true

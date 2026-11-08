@@ -10,7 +10,9 @@
 //!   (`CLSID_CMSH264DecoderMFT`) con aceleración DXVA sobre D3D11
 //!   (`IMFDXGIDeviceManager` + `MFT_MESSAGE_SET_D3D_MANAGER`) y modo de baja
 //!   latencia. Ver [`VideoDecoder`].
-//! - **Linux (pendiente):** VAAPI con exportación DMA-BUF.
+//! - **Linux y otras plataformas:** OpenH264 por software con el binario
+//!   oficial de Cisco cargado en tiempo de ejecución (ver `openh264_backend`).
+//!   Siguiente paso: VAAPI con exportación DMA-BUF.
 //!
 //! El módulo [`annexb`] (partir un flujo en AUs) y [`stats`] (p50/p95) son
 //! portables.
@@ -22,6 +24,13 @@ pub mod stats;
 mod windows_mf;
 #[cfg(windows)]
 pub use windows_mf::{create_d3d11_device, DecodedFrame, VideoDecoder};
+
+#[cfg(not(windows))]
+mod openh264_backend;
+#[cfg(not(windows))]
+pub use openh264_backend::{
+    create_decoder_context, DecodedFrame, DecoderContext, VideoDecoder, OPENH264_BLOB, OPENH264_ENV,
+};
 
 #[cfg(windows)]
 pub mod test_encoder;

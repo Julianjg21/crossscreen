@@ -23,6 +23,12 @@ mod d3d11;
 #[cfg(windows)]
 pub use d3d11::{FrameRef, PresentStats, Renderer, RendererOptions};
 
+// Linux y otras plataformas: wgpu (Vulkan/GL), frames I420 desde la CPU.
+#[cfg(not(windows))]
+mod wgpu_backend;
+#[cfg(not(windows))]
+pub use wgpu_backend::{FrameRef, PresentStats, Renderer, RendererOptions};
+
 /// Errores del renderizador.
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {

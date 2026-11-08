@@ -14,6 +14,9 @@ ignore = [
     # solo en Linux y solo en tiempo de compilación (macro procedural; no va al binario).
     # Se resolverá cuando Tauri actualice gtk-rs. Revisar al subir tauri.
     { id = "RUSTSEC-2024-0370", reason = "macro de compilación de gtk-rs vía tauri, solo Linux; sin alternativa propia" },
+    # paste (sin mantenimiento) llega vía wgpu-hal → metal, el backend de wgpu para
+    # macOS/iOS: macro de compilación que no se compila para Windows ni Linux.
+    { id = "RUSTSEC-2024-0436", reason = "macro de compilación de metal (wgpu, solo Apple); no se compila en plataformas soportadas" },
 ]
 
 [licenses]
@@ -31,6 +34,7 @@ allow = [
     "Unicode-DFS-2016",
     "CDLA-Permissive-2.0",
     "MPL-2.0", # solo a nivel de archivo (webpki-roots); no contamina
+    "CC0-1.0", # dominio público (hexf-parse, vía naga/wgpu); más permisiva que MIT
 ]
 # GPL / AGPL / LGPL quedan rechazadas por omisión.
 # Excepciones LGPL (enlace dinámico) se añadirán aquí explícitamente con justificación.

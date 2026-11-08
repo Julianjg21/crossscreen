@@ -97,6 +97,15 @@ struct Args {
     pacing: f64,
 }
 
+#[cfg(not(windows))]
+fn qpc_us32() -> u32 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_micros() as u32
+}
+
+#[cfg(windows)]
 fn qpc_us32() -> u32 {
     use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
     let (mut c, mut f) = (0i64, 0i64);

@@ -14,24 +14,21 @@ use crate::net::{self, NetConfig};
 use crate::session::{
     LossPolicy, MailFrame, Mailbox, SessionStats, StartSession, UiCmd, UserEvent, FREEZE_THRESHOLD,
 };
-use crate::{clock, parse_size, save_png, Args};
+use crate::{clock, parse_size, platform, save_png, Args};
 use anyhow::{anyhow, Context, Result};
 use cs_core::Mode;
-use cs_decode::create_d3d11_device;
 use cs_protocol::control::{ButtonState, InputEvent, MouseButton as ProtoMouseButton};
-use cs_render::{FrameRef, Renderer, RendererOptions};
+use cs_render::{Renderer, RendererOptions};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
-use windows::Win32::Graphics::Direct3D11::ID3D11Device;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::monitor::MonitorHandle;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Fullscreen, Window, WindowId};
 
 /// Tiempo máximo de espera al objeto *waitable* antes de dibujar.
@@ -45,7 +42,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 pub fn main(args: Args) -> Result<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let device = create_d3d11_device().context("creando el dispositivo D3D11")?;
+    let device = platform::create_video_context()?;
     let mut app = ListenApp {
         args,
         proxy,
@@ -78,7 +75,7 @@ struct Session {
     mailbox: Arc<Mailbox>,
     decode_thread: Option<JoinHandle<()>>,
     renderer: Renderer,
-    window: Window,
+    window: Arc<Window>,
     stats: Arc<Mutex<SessionStats>>,
     /// Hay un frame de vídeo nuevo en el buzón: presentar en cuanto haya hueco.
     dirty_video: bool,
@@ -120,7 +117,7 @@ impl Session {
 struct ListenApp {
     args: Args,
     proxy: EventLoopProxy<UserEvent>,
-    device: ID3D11Device,
+    device: platform::VideoContext,
     net: Option<JoinHandle<()>>,
     net_cmd: Option<UnboundedSender<UiCmd>>,
     monitor: Option<MonitorHandle>,
@@ -225,15 +222,11 @@ impl ListenApp {
             let p = m.position();
             attrs = attrs.with_position(PhysicalPosition::new(p.x + 40, p.y + 40));
         }
-        let window = el.create_window(attrs)?;
-        let hwnd = match window.window_handle()?.as_raw() {
-            RawWindowHandle::Win32(h) => windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _),
-            other => return Err(anyhow!("handle de ventana inesperado: {other:?}")),
-        };
+        let window = Arc::new(el.create_window(attrs)?);
         let size = window.inner_size();
-        let mut renderer = Renderer::new(
+        let mut renderer = platform::create_renderer(
             &self.device,
-            hwnd,
+            &window,
             size.width,
             size.height,
             RendererOptions {
@@ -353,12 +346,7 @@ impl ListenApp {
             // El frame anterior se suelta aquí y su superficie vuelve al MFT.
             s.current = Some(f);
         }
-        let frame_ref = s.current.as_ref().map(|m| FrameRef {
-            texture: &m.frame.texture,
-            subresource: m.frame.subresource,
-            width: m.frame.width,
-            height: m.frame.height,
-        });
+        let frame_ref = s.current.as_ref().map(|m| platform::frame_ref(&m.frame));
         s.renderer.render(frame_ref)?;
         let presented_idx = s
             .stats
