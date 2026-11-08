@@ -57,6 +57,8 @@ crossscreen bench-serve                         # en B
 crossscreen bench <ip-de-B>:47800 --peer <huella-de-B> --mbps 20   # en A
 ```
 
+> **¿Eres un agente o retomas el trabajo?** Empieza por [`docs/ESTADO.md`](docs/ESTADO.md) (en qué vamos) y [`AGENTS.md`](AGENTS.md) (reglas del proyecto).
+
 ## Terminología
 
 | Término | Significado |
