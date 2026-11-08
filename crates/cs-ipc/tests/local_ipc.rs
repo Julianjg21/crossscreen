@@ -67,8 +67,10 @@ async fn request_response_and_events_over_real_transport() {
     let handler = Arc::new(TestHandler);
     let server = {
         let ev_tx = ev_tx.clone();
+        // Acepta sin límite: en Unix el segundo `bind` de arriba sondea
+        // conectándose al socket, y esa conexión también llega aquí.
         tokio::spawn(async move {
-            for _ in 0..2 {
+            loop {
                 let stream = listener.accept().await.expect("accept");
                 let h = handler.clone();
                 let events = ev_tx.subscribe();
@@ -123,7 +125,7 @@ async fn request_response_and_events_over_real_transport() {
         client2.request(Request::ListPeers).await,
         Ok(Response::Peers { .. })
     ));
-    server.await.unwrap();
+    server.abort();
 }
 
 #[tokio::test]

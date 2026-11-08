@@ -35,7 +35,18 @@ fn encode_split_decode_roundtrip() {
     );
 
     let device = create_d3d11_device().expect("device");
-    let mut dec = VideoDecoder::new(&device).expect("decoder");
+    let mut dec = match VideoDecoder::new(&device) {
+        Ok(d) => d,
+        // Sin decodificación H.264 por hardware (p. ej. runners de CI sin GPU):
+        // se omite de forma explícita en vez de fallar. En equipos con GPU sí se ejecuta.
+        Err(cs_decode::DecodeError::Unsupported(msg)) => {
+            eprintln!(
+                "OMITIDO: este equipo no tiene decodificación H.264 por hardware (DXVA): {msg}"
+            );
+            return;
+        }
+        Err(e) => panic!("decoder: {e:?}"),
+    };
     // Se guarda solo un resumen de cada frame y se suelta enseguida para
     // devolver la superficie al pool del MFT.
     let mut all = Vec::new();
