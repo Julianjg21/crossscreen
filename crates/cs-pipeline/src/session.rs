@@ -3,7 +3,7 @@
 
 use crate::display_guard::{mode_candidates, VirtualDisplayGuard};
 use crate::stats::{ControlStats, SendStats, SenderReport};
-use crate::timing::{wire_pts, KeyframeCoalescer};
+use crate::timing::{wire_pts, KeyframeCoalescer, KeyframeDecision};
 use crate::win::worker::{self, CursorPos, VideoUnit, WorkerControl, WorkerOutputs, WorkerParams};
 use crate::{SenderConfig, STREAM_ID};
 use anyhow::{bail, Context, Result};
@@ -15,8 +15,10 @@ use cs_protocol::control::{
     ByeReason, ControlMessage, CursorShape, Hello, SinkCapabilities, StartStream,
 };
 use cs_protocol::PROTOCOL_VERSION;
+use cs_transport::fec::{AdaptiveFec, AdaptiveFecConfig};
 use cs_transport::pacer::{self, PacedSendOptions, Pacer, PacerConfig};
 use cs_transport::packetizer::FrameMeta;
+use cs_transport::simloss::LossInjector;
 use cs_transport::{Connection, FramedStream, Packetizer, PacketizerConfig};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -191,6 +193,7 @@ pub(crate) async fn run(
             bitrate_kbps: cfg.bitrate_kbps,
             stream_id: STREAM_ID,
             static_refresh: cfg.static_refresh,
+            intra_refresh: cfg.intra_refresh,
         },
         WorkerOutputs {
             video: video_tx,
@@ -263,24 +266,55 @@ pub(crate) async fn run(
         Err(_) => bail!("el receptor no confirmó StreamStarted en {START_TIMEOUT:?}"),
     }
     println!(
-        "Flujo iniciado: {}x{}@{fps} · {} kbps · FEC {} · pacing {:?}",
-        display_mode.width, display_mode.height, cfg.bitrate_kbps, cfg.fec_ratio, cfg.pacing
+        "Flujo iniciado: {}x{}@{fps} · {} kbps · FEC P={} IDR={} (adaptativo={}, entrelazado={}) · pacing {:?}{}",
+        display_mode.width,
+        display_mode.height,
+        cfg.bitrate_kbps,
+        cfg.fec_ratio,
+        cfg.keyframe_fec_ratio,
+        cfg.adaptive_fec,
+        cfg.fec_interleave,
+        cfg.pacing,
+        cfg.sim_loss
+            .map(|(m, seed)| format!(" · sim-loss {m} (seed={seed:#x})"))
+            .unwrap_or_default()
     );
     // 6. El primer frame tras StreamStarted es IDR (el hilo arranca con need_idr).
     wctl.force_idr.store(true, Ordering::Relaxed);
     wctl.streaming.store(true, Ordering::Relaxed);
     let start = Instant::now();
 
+    let (fec_tx, fec_rx) = watch::channel(cfg.fec_ratio);
     let video = tokio::spawn(video_task(
         conn.clone(),
         video_rx,
+        fec_rx,
         cfg.clone(),
         Duration::from_micros(1_000_000 / u64::from(fps)),
     ));
 
     // Bucle de control.
-    let mut cs = ControlStats::default();
+    let mut adaptive_fec = (cfg.adaptive_fec && cfg.fec_ratio > 0.0).then(|| {
+        AdaptiveFec::new(AdaptiveFecConfig {
+            initial: cfg.fec_ratio,
+            ..AdaptiveFecConfig::default()
+        })
+    });
+    let initial_fec = adaptive_fec
+        .as_ref()
+        .map_or(cfg.fec_ratio, AdaptiveFec::ratio);
+    let _ = fec_tx.send(initial_fec);
+    let mut cs = ControlStats {
+        fec_initial: initial_fec,
+        fec_final: initial_fec,
+        fec_min: initial_fec,
+        fec_max: initial_fec,
+        keyframe_fec: cfg.keyframe_fec_ratio,
+        fec_interleaved: cfg.fec_interleave,
+        ..ControlStats::default()
+    };
     let mut coalescer = KeyframeCoalescer::new(KEYFRAME_MIN_INTERVAL);
+    coalescer.note_forced(start);
     let deadline = cfg.duration.map(|d| tokio::time::Instant::now() + d);
     let mut shutdown = shutdown;
     // Enviar el estado inicial del cursor si ya lo hay.
@@ -309,14 +343,31 @@ pub(crate) async fn run(
             m = ctl.recv::<ControlMessage>() => match m {
                 Ok(Some(ControlMessage::RequestKeyframe { .. })) => {
                     cs.keyframe_requests += 1;
-                    if coalescer.request(Instant::now()) {
-                        wctl.force_idr.store(true, Ordering::Relaxed);
-                        cs.keyframes_forced += 1;
+                    match coalescer.request_with_rtt(Instant::now(), conn.rtt()) {
+                        KeyframeDecision::ForceNow => {
+                            wctl.force_idr.store(true, Ordering::Relaxed);
+                            cs.keyframes_forced += 1;
+                        }
+                        KeyframeDecision::Deferred => {}
+                        KeyframeDecision::Ignored => {
+                            cs.keyframe_requests_ignored += 1;
+                            tracing::debug!(rtt = ?conn.rtt(), "RequestKeyframe ignorado (<1 RTT del último IDR)");
+                        }
                     }
                 }
                 Ok(Some(ControlMessage::ReceiverStats(s))) => {
                     cs.receiver_stats += 1;
                     tracing::info!(?s, "ReceiverStats");
+                    if let Some(afec) = adaptive_fec.as_mut() {
+                        if let Some(ch) = afec.on_stats(s.frames_received, s.frames_lost, s.pre_fec_loss_bp) {
+                            let _ = fec_tx.send(ch.to);
+                            cs.fec_changes += 1;
+                            cs.fec_final = ch.to;
+                            cs.fec_min = cs.fec_min.min(ch.to);
+                            cs.fec_max = cs.fec_max.max(ch.to);
+                            tracing::info!(from = ch.from, to = ch.to, reason = ?ch.reason, "FEC adaptativo actualizado");
+                        }
+                    }
                     cs.last_receiver_stats = Some(s);
                 }
                 Ok(Some(ControlMessage::Bye { reason })) => {
@@ -425,6 +476,7 @@ async fn sleep_opt(at: Option<tokio::time::Instant>) {
 async fn video_task(
     conn: Connection,
     mut rx: mpsc::Receiver<VideoUnit>,
+    fec_rx: watch::Receiver<f32>,
     cfg: SenderConfig,
     interval: Duration,
 ) -> SendStats {
@@ -437,9 +489,11 @@ async fn video_task(
         STREAM_ID,
         PacketizerConfig {
             max_datagram: max_dg,
-            fec_ratio: cfg.fec_ratio,
+            fec_ratio: *fec_rx.borrow(),
         },
-    );
+    )
+    .with_keyframe_fec_ratio(cfg.keyframe_fec_ratio)
+    .with_interleave(cfg.fec_interleave);
     let mut pacer = Pacer::new(PacerConfig {
         mode: cfg.pacing,
         burst_bytes: 4 * max_dg,
@@ -448,11 +502,15 @@ async fn video_task(
         wait: cfg.pacing_wait,
         ..PacedSendOptions::default()
     };
+    let mut sim_loss = cfg
+        .sim_loss
+        .map(|(model, seed)| LossInjector::new(model, seed));
     let mut seq: u32 = 0;
     while let Some(u) = rx.recv().await {
         if let Some(m) = conn.max_datagram_size() {
             packetizer.set_max_datagram(m);
         }
+        packetizer.set_fec_ratio(*fec_rx.borrow());
         let meta = FrameMeta {
             frame_seq: seq,
             pts_us: wire_pts(u.pts_us),
@@ -470,12 +528,21 @@ async fn video_task(
         let sizes: Vec<usize> = dgs.iter().map(Vec::len).collect();
         st.wire_bytes += sizes.iter().sum::<usize>() as u64;
         let schedule = pacer.schedule(&sizes, interval, Instant::now());
+        let mut drops = (0..dgs.len())
+            .map(|_| sim_loss.as_mut().is_some_and(LossInjector::drop_next))
+            .collect::<Vec<_>>()
+            .into_iter();
         let c = conn.clone();
         let r = pacer::send_paced(
             dgs.into_iter().map(Bytes::from).collect(),
             schedule,
             opts,
-            move |d| c.send_datagram(d).is_ok(),
+            move |d| {
+                if drops.next().unwrap_or(false) {
+                    return true;
+                }
+                c.send_datagram(d).is_ok()
+            },
         )
         .await;
         st.frames_sent += 1;
@@ -486,6 +553,12 @@ async fn video_task(
         st.max_pacing_late = st.max_pacing_late.max(r.max_late);
         st.capture_to_sent_us
             .push(qpc_now_us().saturating_sub(u.pts_us) as f64);
+    }
+    if let Some(inj) = sim_loss {
+        st.datagrams_sent = st.datagrams_sent.saturating_sub(inj.dropped);
+        st.sim_dropped_datagrams = inj.dropped;
+        st.sim_bursts = inj.bursts;
+        st.sim_longest_burst = inj.longest_burst;
     }
     st
 }

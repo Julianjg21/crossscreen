@@ -258,11 +258,13 @@ async fn main() -> Result<()> {
             }
             _ = stats_tick.tick() => {
                 let s = r.stats();
+                let pre_fec_loss_bp = ((s.shards_recovered * 10_000) / s.datagrams.max(1))
+                    .min(10_000) as u16;
                 ctl.send(&ControlMessage::ReceiverStats(ReceiverStats {
                     stream_id: start.stream_id,
                     frames_received: s.frames_delivered as u32,
-                    frames_lost: s.frames_lost as u32,
-                    pre_fec_loss_bp: 0,
+                    frames_lost: (s.frames_lost + c.gaps) as u32,
+                    pre_fec_loss_bp,
                     jitter_us: 0,
                     decode_time_us: 0,
                 })).await?;
@@ -290,8 +292,7 @@ async fn main() -> Result<()> {
                 for ev in evs {
                     match ev {
                         ReassemblyEvent::Frame(f) => {
-                            // Un frame del que no llegó NINGÚN fragmento no genera
-                            // `Lost` en el Reassembler: detectar el hueco en frame_seq.
+                            // Respaldo: hueco no notificado por el Reassembler.
                             let gap = last_seq.is_some_and(|l: u32| f.frame_seq != l.wrapping_add(1));
                             last_seq = Some(f.frame_seq);
                             if gap {
@@ -304,6 +305,7 @@ async fn main() -> Result<()> {
                             if let Some(w) = dump.as_mut() { w.write_all(&f.data)?; }
                         }
                         ReassemblyEvent::Lost { frame_seq } => {
+                            last_seq = Some(frame_seq);
                             c.lost += 1;
                             tracing::info!(frame_seq, "frame perdido → RequestKeyframe");
                             ctl.send(&ControlMessage::RequestKeyframe { stream_id: start.stream_id }).await?;

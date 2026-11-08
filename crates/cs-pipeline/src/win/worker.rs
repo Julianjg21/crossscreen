@@ -53,6 +53,7 @@ pub struct WorkerParams {
     pub bitrate_kbps: u32,
     pub stream_id: StreamId,
     pub static_refresh: Option<Duration>,
+    pub intra_refresh: Option<u32>,
 }
 
 /// Órdenes del lado async al hilo.
@@ -274,7 +275,9 @@ impl Worker {
                 "recreando el codificador (cambio de tamaño, de dispositivo o tras errores)"
             );
         }
-        let cfg = EncoderConfig::desktop(size.0, size.1, self.params.fps, self.params.bitrate_kbps);
+        let mut cfg =
+            EncoderConfig::desktop(size.0, size.1, self.params.fps, self.params.bitrate_kbps);
+        cfg.intra_refresh = self.params.intra_refresh;
         let inner = MfH264Encoder::new(cap.device(), cfg).map_err(|e| e.to_string())?;
         tracing::info!(
             encoder = %inner.caps().info.friendly_name,

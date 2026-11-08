@@ -63,6 +63,11 @@ pub struct SendStats {
     pub wire_bytes: u64,
     pub datagrams_sent: u64,
     pub datagrams_failed: u64,
+    /// Datagramas descartados por el inyector de pérdidas (`--sim-loss`).
+    pub sim_dropped_datagrams: u64,
+    /// Ráfagas de pérdidas simuladas y la más larga.
+    pub sim_bursts: u64,
+    pub sim_longest_burst: u64,
     /// Captura (pts QPC) → último datagrama entregado a QUIC (µs).
     pub capture_to_sent_us: Samples,
     /// Mayor retraso de un datagrama respecto a su plan de *pacing*.
@@ -74,10 +79,20 @@ pub struct SendStats {
 pub struct ControlStats {
     pub keyframe_requests: u64,
     pub keyframes_forced: u64,
+    /// Peticiones ignoradas por llegar dentro de ~1 RTT del último IDR forzado.
+    pub keyframe_requests_ignored: u64,
     pub cursor_positions: u64,
     pub cursor_shapes: u64,
     pub receiver_stats: u64,
     pub last_receiver_stats: Option<ReceiverStats>,
+    /// Cambios de paridad del FEC adaptativo y rango alcanzado.
+    pub fec_changes: u64,
+    pub fec_initial: f32,
+    pub fec_final: f32,
+    pub fec_min: f32,
+    pub fec_max: f32,
+    pub keyframe_fec: f32,
+    pub fec_interleaved: bool,
 }
 
 /// Informe final del emisor.
@@ -159,19 +174,39 @@ impl fmt::Display for SenderReport {
         let p_frames = w.encoded.saturating_sub(w.idr_out);
         writeln!(
             f,
-            "IDR: {} a la salida (medio {:.1} KiB; P medio {:.1} KiB) · forzados {} · peticiones del receptor {} (atendidas {})",
+            "IDR: {} a la salida (medio {:.1} KiB; P medio {:.1} KiB) · forzados {} · peticiones del receptor {} (atendidas {}, ignoradas <1 RTT {})",
             w.idr_out,
             avg(w.idr_bytes, w.idr_out),
             avg(w.p_bytes, p_frames),
             w.forced_idr,
             c.keyframe_requests,
-            c.keyframes_forced
+            c.keyframes_forced,
+            c.keyframe_requests_ignored
         )?;
         writeln!(
             f,
-            "Datagramas: {} enviados, {} fallidos · retraso máx. de pacing {:.2} ms",
+            "FEC: P inicial {:.2} → final {:.2} (rango [{:.2}, {:.2}], {} cambios) · IDR {:.2} · entrelazado {}",
+            c.fec_initial,
+            c.fec_final,
+            c.fec_min,
+            c.fec_max,
+            c.fec_changes,
+            c.keyframe_fec,
+            c.fec_interleaved
+        )?;
+        writeln!(
+            f,
+            "Datagramas: {} enviados, {} fallidos{} · retraso máx. de pacing {:.2} ms",
             s.datagrams_sent,
             s.datagrams_failed,
+            if s.sim_dropped_datagrams > 0 {
+                format!(
+                    ", {} descartados por --sim-loss ({} ráfagas, máx. {})",
+                    s.sim_dropped_datagrams, s.sim_bursts, s.sim_longest_burst
+                )
+            } else {
+                String::new()
+            },
             s.max_pacing_late.as_secs_f64() * 1000.0
         )?;
         writeln!(

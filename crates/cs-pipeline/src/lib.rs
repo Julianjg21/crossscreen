@@ -24,6 +24,7 @@ pub mod win;
 pub use stats::SenderReport;
 
 use cs_core::{DeviceId, Mode, StreamMode};
+use cs_transport::simloss::LossModel;
 use cs_transport::{PacingMode, WaitStrategy};
 use std::time::Duration;
 
@@ -42,7 +43,16 @@ pub struct SenderConfig {
     pub requested_mode: Option<Mode>,
     pub fallback_mode: Mode,
     pub bitrate_kbps: u32,
+    /// Paridad inicial de los P-frames (o fija si `adaptive_fec = false`).
     pub fec_ratio: f32,
+    /// Paridad de los IDR (se usa `max(keyframe_fec_ratio, fec_ratio)`).
+    pub keyframe_fec_ratio: f32,
+    /// Entrelazar los shards entre bloques FEC de un mismo frame.
+    pub fec_interleave: bool,
+    /// Ajustar la paridad de los P-frames según `ReceiverStats`.
+    pub adaptive_fec: bool,
+    /// Valor opcional para `CODECAPI_AVEncVideoGradualIntraRefresh`.
+    pub intra_refresh: Option<u32>,
     pub pacing: PacingMode,
     pub pacing_wait: WaitStrategy,
     /// Duración máxima (`--seconds`).
@@ -50,10 +60,14 @@ pub struct SenderConfig {
     /// Con el escritorio estático, recodificar la última imagen cada este
     /// intervalo (`None` = nunca). Ver el módulo `win::worker`.
     pub static_refresh: Option<Duration>,
+    /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
+    /// `(modelo, semilla)`.
+    pub sim_loss: Option<(LossModel, u64)>,
 }
 
 impl SenderConfig {
-    /// Valores por defecto del contrato: 20 Mbps, FEC 0,1, *pacing* 0,6.
+    /// Valores por defecto: 20 Mbps, FEC 0,15 (IDR 0,5, entrelazado y
+    /// adaptativo), *pacing* 0,6.
     pub fn new(device_id: DeviceId, device_name: String) -> Self {
         Self {
             device_id,
@@ -62,11 +76,16 @@ impl SenderConfig {
             requested_mode: None,
             fallback_mode: Mode::new(1920, 1080, 60),
             bitrate_kbps: 20_000,
-            fec_ratio: 0.1,
+            fec_ratio: 0.15,
+            keyframe_fec_ratio: 0.5,
+            fec_interleave: true,
+            adaptive_fec: true,
+            intra_refresh: None,
             pacing: PacingMode::Spread { fraction: 0.6 },
             pacing_wait: WaitStrategy::HighResTimer,
             duration: None,
             static_refresh: Some(Duration::from_secs(1)),
+            sim_loss: None,
         }
     }
 }

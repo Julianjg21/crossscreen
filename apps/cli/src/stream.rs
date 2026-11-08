@@ -13,6 +13,7 @@ use cs_protocol::ALPN;
 use cs_security::identity::Identity;
 use cs_security::verifier::PeerPolicy;
 use cs_security::Fingerprint;
+use cs_transport::simloss::LossModel;
 use cs_transport::Endpoint;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -45,9 +46,21 @@ pub struct StreamArgs {
     /// Tasa de vídeo objetivo (CBR) en Mbit/s.
     #[arg(long, default_value_t = 20.0)]
     pub mbps: f64,
-    /// Proporción de paridad FEC (0 = sin FEC).
-    #[arg(long, default_value_t = 0.1)]
+    /// Proporción inicial de paridad FEC para los P-frames (0 = sin FEC).
+    #[arg(long, default_value_t = 0.15)]
     pub fec: f32,
+    /// Proporción de paridad FEC para los IDR (`max(--keyframe-fec, --fec)`).
+    #[arg(long, default_value_t = 0.5)]
+    pub keyframe_fec: f32,
+    /// Desactivar el entrelazado de shards entre bloques FEC de un mismo frame.
+    #[arg(long)]
+    pub no_fec_interleave: bool,
+    /// Mantener la paridad de los P-frames fija en `--fec` (sin ajuste por `ReceiverStats`).
+    #[arg(long)]
+    pub no_adaptive_fec: bool,
+    /// Valor opcional para `CODECAPI_AVEncVideoGradualIntraRefresh` (experimental).
+    #[arg(long)]
+    pub intra_refresh: Option<u32>,
     #[command(flatten)]
     pub pacing: PacingArgs,
     /// Terminar tras S segundos de flujo.
@@ -57,6 +70,13 @@ pub struct StreamArgs {
     /// (0 = nunca).
     #[arg(long, default_value_t = 1.0)]
     pub static_refresh: f64,
+    /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
+    /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
+    #[arg(long)]
+    pub sim_loss: Option<LossModel>,
+    /// Semilla del inyector `--sim-loss`.
+    #[arg(long, default_value_t = 0x5eed)]
+    pub sim_loss_seed: u64,
 }
 
 pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamArgs) -> Result<()> {
@@ -65,6 +85,9 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     }
     if !(0.0..=1.0).contains(&a.fec) {
         bail!("--fec debe estar en [0, 1]");
+    }
+    if !(0.0..=1.0).contains(&a.keyframe_fec) {
+        bail!("--keyframe-fec debe estar en [0, 1]");
     }
     let mut cfg = SenderConfig::new(identity.fingerprint().device_id(), name.to_owned());
     cfg.mode = match a.mode {
@@ -83,11 +106,16 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     }
     cfg.bitrate_kbps = (a.mbps * 1000.0).round() as u32;
     cfg.fec_ratio = a.fec;
+    cfg.keyframe_fec_ratio = a.keyframe_fec;
+    cfg.fec_interleave = !a.no_fec_interleave;
+    cfg.adaptive_fec = !a.no_adaptive_fec;
+    cfg.intra_refresh = a.intra_refresh;
     cfg.pacing = a.pacing.pacing;
     cfg.pacing_wait = a.pacing.pacing_wait;
     cfg.duration = a.seconds.map(Duration::from_secs);
     cfg.static_refresh =
         (a.static_refresh > 0.0).then(|| Duration::from_secs_f64(a.static_refresh));
+    cfg.sim_loss = a.sim_loss.map(|m| (m, a.sim_loss_seed));
 
     // Señal de parada: Ctrl+C, Ctrl+Break y cierre de la consola.
     #[cfg(windows)]

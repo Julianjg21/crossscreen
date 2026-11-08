@@ -815,6 +815,98 @@ mod bench {
         Ok(())
     }
 
+    /// Verifica si `CODECAPI_AVEncVideoGradualIntraRefresh` produce algún
+    /// cambio real en el flujo del MFT de Intel (SEI `recovery_point`,
+    /// supresión de IDR periódicos, tamaño de P-frames o diferencias byte a
+    /// byte respecto a la configuración base con la misma entrada sintética).
+    fn intra_refresh_probe(setup: &D3D11Setup) -> anyhow::Result<()> {
+        println!("\n## Verificación de CODECAPI_AVEncVideoGradualIntraRefresh (1920x1080 @ 20 Mbps, 120 frames)");
+        for gop in [600u32, 30] {
+            println!("  -- GOP = {gop} frames --");
+            let mut baseline: Option<Vec<Vec<u8>>> = None;
+            for ir in [
+                None,
+                Some(1u32),
+                Some(30),
+                Some(0x0001_0001),
+                Some(0x0001_001E),
+                Some(0x0001_003C),
+                Some(0x0002_001E),
+            ] {
+                let mut cfg = EncoderConfig::desktop(1920, 1080, 60, 20_000);
+                cfg.gop_frames = gop;
+                cfg.intra_refresh = ir;
+                let label = match ir {
+                    None => "None (0)".to_string(),
+                    Some(v) => format!("0x{v:08X} ({v})"),
+                };
+                let mut enc = match MfH264Encoder::new(&setup.device, cfg.clone()) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        println!("    ir={label:<18}: error al crear codificador: {e}");
+                        continue;
+                    }
+                };
+                let outcome = enc
+                    .caps()
+                    .properties
+                    .iter()
+                    .find(|p| p.name == "CODECAPI_AVEncVideoGradualIntraRefresh")
+                    .map(|p| format!("{:?}", p.outcome))
+                    .unwrap_or_else(|| "no fijada".into());
+                let mut synth = Synth::new(setup, 1920, 1080)?;
+                let mut units = Vec::new();
+                for n in 0..120u64 {
+                    let f = InputFrame {
+                        texture: synth.render(n),
+                        subresource: 0,
+                        pts_us: n * cfg.frame_duration_us(),
+                    };
+                    for u in enc.encode(&f, EncodeControl::default())? {
+                        units.push((u.data, u.keyframe));
+                    }
+                }
+                let c = check_units(&units);
+                let mut sei_types = std::collections::BTreeMap::<u32, usize>::new();
+                for (data, _) in &units {
+                    for nal in annexb::split_nals(data) {
+                        if nal.nal_type() == nal_type::SEI {
+                            if let Ok(msgs) = h264::parse_sei_messages(nal.data) {
+                                for (pt, _) in msgs {
+                                    *sei_types.entry(pt).or_default() += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                let raw: Vec<Vec<u8>> = units.iter().map(|(d, _)| d.clone()).collect();
+                let same_as_base = match &baseline {
+                    None => {
+                        baseline = Some(raw);
+                        units.len()
+                    }
+                    Some(b) => b.iter().zip(&raw).filter(|(x, y)| x == y).count(),
+                };
+                let p_sizes: Vec<usize> = units
+                    .iter()
+                    .filter(|(_, k)| !*k)
+                    .map(|(d, _)| d.len())
+                    .collect();
+                let p_mean = if p_sizes.is_empty() {
+                    0
+                } else {
+                    p_sizes.iter().sum::<usize>() / p_sizes.len()
+                };
+                let p_max = p_sizes.iter().copied().max().unwrap_or(0);
+                println!(
+                    "    ir={label:<18} -> {outcome} | IDR={} I={} P={} | P media={} B máx={} B | SEI={sei_types:?} | idénticos a base={}/{}"
+                    , c.idr_units, c.i_slices, c.p_slices, p_mean, p_max, same_as_base, units.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn run() -> anyhow::Result<()> {
         let args: Vec<String> = std::env::args().collect();
         let quick = args.iter().any(|a| a == "--quick");
@@ -828,6 +920,7 @@ mod bench {
         let idr_every: u64 = if quick { 40 } else { 120 };
         let only1080 = args.iter().any(|a| a == "--only1080");
         let variants = args.iter().any(|a| a == "--variants");
+        let ir_probe = args.iter().any(|a| a == "--intra-refresh");
         let setup = create_d3d11_device(Some(0x8086))?;
         println!("# PoC-3 encode_bench");
         println!(
@@ -842,6 +935,11 @@ mod bench {
                 i.vendor_id,
                 i.adapter_luid.map(|l| format!("0x{l:016X}"))
             );
+        }
+
+        if ir_probe {
+            intra_refresh_probe(&setup)?;
+            return Ok(());
         }
 
         if variants {

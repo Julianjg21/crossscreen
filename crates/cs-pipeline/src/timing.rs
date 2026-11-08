@@ -39,9 +39,31 @@ pub fn wire_pts(pts_us: u64) -> u32 {
     pts_us as u32
 }
 
+/// Tope del RTT considerado al ignorar peticiones repetidas (una estimación
+/// inicial de QUIC antes de que haya tráfico puede acercarse a 1 s).
+pub const MAX_RTT_IGNORE: Duration = Duration::from_millis(500);
+
+/// Decisión ante una petición `RequestKeyframe`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyframeDecision {
+    /// Forzar un IDR inmediatamente.
+    ForceNow,
+    /// Dentro del intervalo mínimo del contrato (pero después de ~1 RTT):
+    /// queda diferido hasta cumplir `min_interval`.
+    Deferred,
+    /// Dentro de ~1 RTT del último IDR forzado: el receptor aún no podía
+    /// haber recibido ese IDR cuando envió la petición, así que se ignora.
+    Ignored,
+}
+
 /// Coalescencia de `RequestKeyframe`: como máximo un IDR forzado cada
-/// `min_interval` (contrato: 100 ms). Una petición dentro de la ventana no se
-/// pierde: queda diferida hasta que la ventana se cumple.
+/// `min_interval` (contrato: 100 ms).
+///
+/// Además, con [`KeyframeCoalescer::request_with_rtt`], las peticiones que
+/// llegan dentro de `~1 RTT` (acotado a [`MAX_RTT_IGNORE`]) del último IDR
+/// forzado se **ignoran** en lugar de diferirse: se enviaron antes de que el
+/// IDR pudiera llegar al receptor, y diferirlas generaba un segundo IDR
+/// redundante 100 ms después.
 #[derive(Debug, Clone)]
 pub struct KeyframeCoalescer {
     min_interval: Duration,
@@ -58,16 +80,34 @@ impl KeyframeCoalescer {
         }
     }
 
-    /// Llega una petición. `true` = forzar el IDR ya.
+    /// Anota que se acaba de forzar un IDR (por ejemplo, el inicial al
+    /// arrancar el flujo).
+    pub fn note_forced(&mut self, now: Instant) {
+        self.last_forced = Some(now);
+        self.deferred = false;
+    }
+
+    /// Llega una petición (sin filtro de RTT). `true` = forzar el IDR ya.
     pub fn request(&mut self, now: Instant) -> bool {
-        if self.ready(now) {
-            self.last_forced = Some(now);
-            self.deferred = false;
-            true
-        } else {
-            self.deferred = true;
-            false
+        self.request_with_rtt(now, Duration::ZERO) == KeyframeDecision::ForceNow
+    }
+
+    /// Llega una petición con el RTT actual de la conexión.
+    pub fn request_with_rtt(&mut self, now: Instant, rtt: Duration) -> KeyframeDecision {
+        let ignore_window = rtt.min(MAX_RTT_IGNORE);
+        if let Some(last) = self.last_forced {
+            let elapsed = now.saturating_duration_since(last);
+            if elapsed < ignore_window {
+                return KeyframeDecision::Ignored;
+            }
+            if elapsed < self.min_interval {
+                self.deferred = true;
+                return KeyframeDecision::Deferred;
+            }
         }
+        self.last_forced = Some(now);
+        self.deferred = false;
+        KeyframeDecision::ForceNow
     }
 
     /// Instante en que vence la petición diferida, si la hay.
@@ -131,5 +171,46 @@ mod tests {
         assert!(!k.poll(t0 + ms(300)));
         assert_eq!(k.deferred_until(), None);
         assert!(k.request(t0 + ms(300)));
+    }
+
+    #[test]
+    fn coalescer_ignores_within_rtt_and_defers_after_rtt() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let rtt = ms(30);
+        let mut k = KeyframeCoalescer::new(ms(100));
+        assert_eq!(k.request_with_rtt(t0, rtt), KeyframeDecision::ForceNow);
+        // Dentro de 1 RTT (30 ms): ignorada, NO queda diferida.
+        assert_eq!(
+            k.request_with_rtt(t0 + ms(10), rtt),
+            KeyframeDecision::Ignored
+        );
+        assert_eq!(
+            k.request_with_rtt(t0 + ms(29), rtt),
+            KeyframeDecision::Ignored
+        );
+        assert_eq!(k.deferred_until(), None);
+        assert!(!k.poll(t0 + ms(100)));
+        // Entre 1 RTT (30 ms) y 100 ms: sí se difiere a t0 + 100 ms.
+        let mut k = KeyframeCoalescer::new(ms(100));
+        assert_eq!(k.request_with_rtt(t0, rtt), KeyframeDecision::ForceNow);
+        assert_eq!(
+            k.request_with_rtt(t0 + ms(40), rtt),
+            KeyframeDecision::Deferred
+        );
+        assert_eq!(k.deferred_until(), Some(t0 + ms(100)));
+        assert!(k.poll(t0 + ms(100)));
+        // Si el RTT supera 100 ms (p. ej. 250 ms), ignora hasta 250 ms y
+        // después fuerza al instante.
+        let mut k = KeyframeCoalescer::new(ms(100));
+        k.note_forced(t0);
+        assert_eq!(
+            k.request_with_rtt(t0 + ms(200), ms(250)),
+            KeyframeDecision::Ignored
+        );
+        assert_eq!(
+            k.request_with_rtt(t0 + ms(260), ms(250)),
+            KeyframeDecision::ForceNow
+        );
     }
 }

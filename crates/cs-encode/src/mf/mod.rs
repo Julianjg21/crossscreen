@@ -606,6 +606,13 @@ impl MfH264Encoder {
                 VARIANT::from(true),
             ));
         }
+        if let Some(ir) = cfg.intra_refresh {
+            wanted.push((
+                "CODECAPI_AVEncVideoGradualIntraRefresh",
+                CODECAPI_AVEncVideoGradualIntraRefresh,
+                VARIANT::from(ir),
+            ));
+        }
 
         wanted.extend(extra.iter().cloned());
         let mut retry = Vec::new();

@@ -71,6 +71,9 @@ pub struct EncoderConfig {
     /// Si un IDR sale sin SPS/PPS en banda, anteponer los últimos conocidos
     /// (de `MF_MT_MPEG_SEQUENCE_HEADER` o de un IDR anterior).
     pub ensure_parameter_sets_on_idr: bool,
+    /// Valor opcional para `CODECAPI_AVEncVideoGradualIntraRefresh` (`VT_UI4`).
+    /// `None` no toca la propiedad (queda en 0, desactivado).
+    pub intra_refresh: Option<u32>,
 }
 
 impl EncoderConfig {
@@ -90,6 +93,7 @@ impl EncoderConfig {
             low_latency: true,
             output_timeout: Duration::from_millis(100),
             ensure_parameter_sets_on_idr: true,
+            intra_refresh: None,
         }
     }
 

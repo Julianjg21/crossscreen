@@ -412,6 +412,44 @@ pub fn parse_slice_start(nal: &[u8]) -> Result<SliceStart, ParseError> {
     })
 }
 
+/// Mensaje SEI (H.264 §7.3.2.3.1): `(payload_type, payload_size)`.
+/// `payload_type == 6` es `recovery_point` (usado por *gradual intra refresh*).
+pub fn parse_sei_messages(nal: &[u8]) -> Result<Vec<(u32, u32)>, ParseError> {
+    let header = *nal.first().ok_or(ParseError::Eof)?;
+    if header & 0x1F != 6 {
+        return Err(ParseError::WrongNalType(header & 0x1F));
+    }
+    let rbsp = unescape_rbsp(&nal[1..]);
+    let mut i = 0usize;
+    let mut out = Vec::new();
+    // El último byte es `rbsp_trailing_bits` (0x80) cuando queda 1 byte.
+    while i < rbsp.len() && !(i + 1 == rbsp.len() && rbsp[i] == 0x80) {
+        let mut payload_type = 0u32;
+        while *rbsp.get(i).ok_or(ParseError::Eof)? == 0xFF {
+            payload_type = payload_type.saturating_add(255);
+            i += 1;
+        }
+        payload_type = payload_type.saturating_add(u32::from(*rbsp.get(i).ok_or(ParseError::Eof)?));
+        i += 1;
+
+        let mut payload_size = 0u32;
+        while *rbsp.get(i).ok_or(ParseError::Eof)? == 0xFF {
+            payload_size = payload_size.saturating_add(255);
+            i += 1;
+        }
+        payload_size = payload_size.saturating_add(u32::from(*rbsp.get(i).ok_or(ParseError::Eof)?));
+        i += 1;
+
+        let end = i.saturating_add(payload_size as usize);
+        if end > rbsp.len() {
+            return Err(ParseError::Eof);
+        }
+        out.push((payload_type, payload_size));
+        i = end;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,6 +710,13 @@ mod tests {
         assert_eq!(s.slice_type, SliceType::P);
         assert_eq!(s.first_mb_in_slice, 120);
         assert!(parse_slice_start(&[0x67, 0]).is_err());
+
+        // SEI con dos mensajes: buffering_period (0, 3 B) y recovery_point (6, 2 B) + trailing 0x80.
+        let sei = [
+            0x06, 0x00, 0x03, 0xAA, 0xBB, 0xCC, 0x06, 0x02, 0x10, 0x20, 0x80,
+        ];
+        assert_eq!(parse_sei_messages(&sei).unwrap(), vec![(0, 3), (6, 2)]);
+        assert!(parse_sei_messages(&[0x67, 0x80]).is_err());
     }
 
     /// SPS real emitido por el MFT Intel Quick Sync (Iris Xe) en la PoC-3
