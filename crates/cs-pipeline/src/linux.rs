@@ -494,11 +494,21 @@ async fn open_virtual_monitor(
     Ok(())
 }
 
-/// Resolución para el monitor virtual: la pedida o la nativa del receptor,
-/// en dimensiones pares (H.264 4:2:0).
-fn virtual_size(requested: Option<Mode>, native: Mode) -> (u32, u32) {
-    let m = requested.unwrap_or(native);
-    ((m.width & !1).max(2), (m.height & !1).max(2))
+/// Resolución para el monitor virtual: la pedida o, si no, la nativa del
+/// receptor con `fallback` de reserva; solo modos válidos
+/// (`Mode::validate`: 320..=8192 por lado), en dimensiones pares (H.264
+/// 4:2:0). `None` si ninguno es válido.
+fn virtual_size(requested: Option<Mode>, native: Mode, fallback: Mode) -> Option<(u32, u32)> {
+    let candidates = match requested {
+        Some(m) => vec![m],
+        None => vec![native, fallback],
+    };
+    candidates
+        .into_iter()
+        // Pares antes de validar (validate rechaza dimensiones impares).
+        .map(|m| Mode::new(m.width & !1, m.height & !1, 60))
+        .find(|m| m.validate().is_ok())
+        .map(|m| (m.width, m.height))
 }
 
 /// Paso 2: sesión con el receptor sobre `conn` hasta que termine. Libera
@@ -582,8 +592,15 @@ async fn session(
     let stream_mode = if prepared.extend {
         // Extender: el monitor virtual toma la resolución del receptor. El
         // visor espera StartStream 10 s; crear el monitor tarda ~1 s.
-        let size = virtual_size(cfg.requested_mode, sink.native_mode);
-        if let Err(e) = open_virtual_monitor(prepared, cfg, size).await {
+        let opened = match virtual_size(cfg.requested_mode, sink.native_mode, cfg.fallback_mode) {
+            Some(size) => open_virtual_monitor(prepared, cfg, size).await,
+            None => Err(anyhow!(
+                "resolución no válida para el monitor virtual (receptor {}x{})",
+                sink.native_mode.width,
+                sink.native_mode.height
+            )),
+        };
+        if let Err(e) = opened {
             let _ = ctl
                 .send(&ControlMessage::Bye {
                     reason: ByeReason::Error,
@@ -799,13 +816,28 @@ mod tests {
     use cs_core::Mode;
 
     #[test]
-    fn virtual_monitor_uses_receiver_mode_with_even_size() {
+    fn virtual_monitor_uses_valid_receiver_mode_with_even_size() {
+        let fb = Mode::new(1920, 1080, 60);
         let native = Mode::new(1366, 768, 60);
-        assert_eq!(virtual_size(None, native), (1366, 768));
-        assert_eq!(virtual_size(None, Mode::new(1365, 767, 60)), (1364, 766));
+        assert_eq!(virtual_size(None, native, fb), Some((1366, 768)));
         assert_eq!(
-            virtual_size(Some(Mode::new(2560, 1440, 60)), native),
-            (2560, 1440)
+            virtual_size(None, Mode::new(1365, 767, 60), fb),
+            Some((1364, 766))
         );
+        assert_eq!(
+            virtual_size(Some(Mode::new(2560, 1440, 60)), native, fb),
+            Some((2560, 1440))
+        );
+        // Receptor con un modo absurdo: se usa la reserva.
+        assert_eq!(
+            virtual_size(None, Mode::new(100_000, 100_000, 60), fb),
+            Some((1920, 1080))
+        );
+        assert_eq!(
+            virtual_size(None, Mode::new(0, 0, 60), fb),
+            Some((1920, 1080))
+        );
+        // Modo pedido inválido: no hay monitor.
+        assert_eq!(virtual_size(Some(Mode::new(10, 10, 60)), native, fb), None);
     }
 }
