@@ -173,7 +173,7 @@ fn run_i420(
             let c_len = width as usize / 2 * half_height;
             let (y, u, v, strides) = if buffer.datas_mut().len() >= 3 {
                 let planes = buffer.datas_mut();
-                let copy_plane = |plane: &mut spa::buffer::Data| {
+                let copy_plane = |plane: &mut spa::data::Data| {
                     let size = plane.chunk().size() as usize;
                     plane
                         .data()
@@ -265,10 +265,9 @@ fn run_i420(
     .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?
     .0
     .into_inner();
-    let mut params = [spa::pod::Pod::from_bytes(&values)
-        .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?];
+    let mut params = [values.as_ptr() as *const pipewire_sys::spa_pod];
     stream.connect(
-        spa::utils::Direction::Input,
+        spa::Direction::Input,
         Some(node_id),
         pw::stream::StreamFlags::AUTOCONNECT
             | pw::stream::StreamFlags::MAP_BUFFERS
