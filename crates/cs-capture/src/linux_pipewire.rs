@@ -80,6 +80,16 @@ pub fn start_i420(
     node_id: u32,
     fd: std::os::fd::OwnedFd,
 ) -> Result<PipeWireCapture, PipeWireCaptureError> {
+    start_i420_sized(node_id, fd, None)
+}
+
+/// Como [`start_i420`], pero pidiendo un tamaño fijo. Con un monitor virtual
+/// de Mutter, ese tamaño es el que tendrá el monitor.
+pub fn start_i420_sized(
+    node_id: u32,
+    fd: std::os::fd::OwnedFd,
+    fixed_size: Option<(u32, u32)>,
+) -> Result<PipeWireCapture, PipeWireCaptureError> {
     let (tx, rx) = mpsc::sync_channel(1);
     let (stop_tx, stop_rx) = pw::channel::channel();
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -88,7 +98,7 @@ pub fn start_i420(
         .spawn(move || {
             // `run_i420` avisa con `Ok` justo antes de entrar en el bucle; si
             // falla antes, el error se envía aquí.
-            if let Err(e) = run_i420(node_id, fd, tx, stop_rx, &ready_tx) {
+            if let Err(e) = run_i420(node_id, fd, fixed_size, tx, stop_rx, &ready_tx) {
                 let _ = ready_tx.send(Err(e));
             }
         })
@@ -231,6 +241,7 @@ fn to_i420(datas: &mut [spa::data::Data], n: Negotiated) -> Option<I420Buffer> {
 fn run_i420(
     node_id: u32,
     fd: std::os::fd::OwnedFd,
+    fixed_size: Option<(u32, u32)>,
     tx: mpsc::SyncSender<I420Buffer>,
     stop_rx: pw::channel::Receiver<()>,
     ready: &mpsc::SyncSender<Result<(), PipeWireCaptureError>>,
@@ -309,6 +320,32 @@ fn run_i420(
         })
         .register()
         .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?;
+    // Tamaño fijo (monitor virtual: será su resolución) o cualquiera.
+    let size_prop = match fixed_size {
+        Some((width, height)) => pw::spa::pod::property!(
+            pw::spa::format::FormatProperties::VideoSize,
+            Rectangle,
+            pw::spa::utils::Rectangle { width, height }
+        ),
+        None => pw::spa::pod::property!(
+            pw::spa::format::FormatProperties::VideoSize,
+            Choice,
+            Range,
+            Rectangle,
+            pw::spa::utils::Rectangle {
+                width: 320,
+                height: 240
+            },
+            pw::spa::utils::Rectangle {
+                width: 1,
+                height: 1
+            },
+            pw::spa::utils::Rectangle {
+                width: 8192,
+                height: 8192
+            }
+        ),
+    };
     let obj = pw::spa::pod::object!(
         pw::spa::utils::SpaTypes::ObjectParamFormat,
         pw::spa::param::ParamType::EnumFormat,
@@ -338,24 +375,7 @@ fn run_i420(
             VideoFormat::ABGR,
             VideoFormat::I420
         ),
-        pw::spa::pod::property!(
-            pw::spa::format::FormatProperties::VideoSize,
-            Choice,
-            Range,
-            Rectangle,
-            pw::spa::utils::Rectangle {
-                width: 320,
-                height: 240
-            },
-            pw::spa::utils::Rectangle {
-                width: 1,
-                height: 1
-            },
-            pw::spa::utils::Rectangle {
-                width: 8192,
-                height: 8192
-            }
-        ),
+        size_prop,
         // Mutter anuncia 0/1 (frecuencia variable): el mínimo debe incluirlo.
         pw::spa::pod::property!(
             pw::spa::format::FormatProperties::VideoFramerate,

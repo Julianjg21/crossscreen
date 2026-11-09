@@ -156,7 +156,9 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     // Linux: diálogo del sistema para elegir la pantalla, antes de conectar
     // (así no consume los temporizadores del receptor).
     #[cfg(not(windows))]
-    cs_log::out!("Elige la pantalla en el diálogo del sistema…");
+    if cfg.mode == StreamMode::Duplicate {
+        cs_log::out!("Elige la pantalla en el diálogo del sistema…");
+    }
     let source = cs_pipeline::prepare_source(&cfg).await?;
     let conn = endpoint
         .connect(a.addr, PeerPolicy::Exactly(peer), ALPN)

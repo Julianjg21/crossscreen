@@ -116,12 +116,6 @@ export default function Stream({
   }, [initialPeer, initialAddr, onConsumeInitial]);
 
   useEffect(() => {
-    if (status.platform === "linux") {
-      setMode("duplicate");
-    }
-  }, [status.platform]);
-
-  useEffect(() => {
     void loadState();
     let alive = true;
     const un = onAgentEvent((ev) => {
@@ -417,8 +411,10 @@ export default function Stream({
                 value={mode}
                 onChange={(e) => setMode(e.target.value as StreamModeInfo)}
               >
-                <option value="extend" disabled={status.platform === "linux"}>
-                  Extender escritorio (monitor virtual; solo Windows)
+                <option value="extend">
+                  {status.platform === "linux"
+                    ? "Extender escritorio (monitor virtual de GNOME)"
+                    : "Extender escritorio (monitor virtual)"}
                 </option>
                 <option value="duplicate">
                   {status.platform === "linux"
@@ -513,7 +509,7 @@ export default function Stream({
           <div className="actions" style={{ marginTop: 18 }}>
             <button type="submit" className="primary" disabled={busy || !selectedPeer}>
               {busy
-                ? status.platform === "linux"
+                ? status.platform === "linux" && mode === "duplicate"
                   ? "Elige la pantalla en el diálogo del sistema…"
                   : "Conectando…"
                 : "Iniciar transmisión"}

@@ -19,6 +19,7 @@ use crate::timing::wire_pts;
 use crate::{SenderConfig, STREAM_ID};
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
+use cs_capture::linux_mutter::MutterVirtual;
 use cs_capture::linux_pipewire::I420Buffer;
 use cs_capture::linux_portal::{describe_error, PortalCaptureSession, PortalSession};
 use cs_core::{Codec, Mode, Roles, StreamMode};
@@ -79,11 +80,12 @@ impl LinuxWorker {
     fn start(
         node_id: u32,
         fd: OwnedFd,
+        fixed_size: Option<(u32, u32)>,
         cfg: &SenderConfig,
         tx: tokio_mpsc::Sender<LinuxUnit>,
         size_tx: watch::Sender<Option<(u32, u32)>>,
     ) -> Result<Self> {
-        let capture = cs_capture::linux_pipewire::start_i420(node_id, fd)
+        let capture = cs_capture::linux_pipewire::start_i420_sized(node_id, fd, fixed_size)
             .context("iniciando el stream PipeWire")?;
         let (frames, capture_control) = capture.into_parts();
         let shared = Arc::new(Shared {
@@ -281,43 +283,97 @@ fn encode_loop(
     stats
 }
 
-/// Captura ya autorizada y en marcha, lista para transmitir.
-///
-/// Si se suelta sin pasar por [`run`] (p. ej. falla la conexión con el
-/// receptor), `Drop` detiene la captura y cierra la sesión del portal.
-pub(crate) struct Prepared {
-    portal: Option<PortalSession>,
-    worker: Option<LinuxWorker>,
+/// Sesión del sistema que hay que cerrar al terminar.
+enum SystemSession {
+    /// Duplicar: sesión del portal (diálogo de GNOME).
+    Portal(PortalSession),
+    /// Extender: sesión de Mutter con el monitor virtual.
+    Mutter(MutterVirtual),
+}
+
+impl SystemSession {
+    async fn close(self) {
+        match self {
+            SystemSession::Portal(p) => p.close().await,
+            SystemSession::Mutter(m) => m.close().await,
+        }
+    }
+
+    async fn wait_closed(&self) {
+        match self {
+            SystemSession::Portal(p) => p.wait_closed().await,
+            SystemSession::Mutter(m) => m.wait_closed().await,
+        }
+    }
+}
+
+/// Captura en marcha: hilo de codificación y sus canales.
+struct Capture {
+    worker: LinuxWorker,
     video_rx: Option<tokio_mpsc::Receiver<LinuxUnit>>,
     size_rx: watch::Receiver<Option<(u32, u32)>>,
 }
 
+/// Fuente Linux preparada antes de conectar con el receptor.
+///
+/// - Duplicar: el usuario ya eligió la pantalla en el diálogo y la captura
+///   tiene su primer frame.
+/// - Extender: solo se comprobó que hay GNOME; el monitor virtual se crea en
+///   la sesión, cuando se conoce la resolución del receptor (sin diálogo).
+///
+/// Si se suelta sin terminar la sesión (p. ej. falla la conexión), `Drop`
+/// detiene la captura y cierra la sesión del sistema.
+pub(crate) struct Prepared {
+    system: Option<SystemSession>,
+    capture: Option<Capture>,
+    extend: bool,
+}
+
 impl Drop for Prepared {
     fn drop(&mut self) {
-        if let Some(worker) = self.worker.take() {
+        if let Some(c) = self.capture.take() {
             // El hilo sale en ≤100 ms; soltar el control detiene PipeWire.
-            worker.shared.stop.store(true, Ordering::Relaxed);
+            c.worker.shared.stop.store(true, Ordering::Relaxed);
         }
-        if let Some(portal) = self.portal.take() {
+        if let Some(system) = self.system.take() {
             match tokio::runtime::Handle::try_current() {
                 Ok(rt) => {
-                    rt.spawn(portal.close());
+                    rt.spawn(system.close());
                 }
-                Err(_) => tracing::warn!("sesión del portal sin cerrar (sin runtime)"),
+                Err(_) => tracing::warn!("sesión del sistema sin cerrar (sin runtime)"),
             }
         }
     }
 }
 
 impl Prepared {
-    /// Libera todo: hilo de codificación, PipeWire y la sesión del portal.
-    async fn release(worker: LinuxWorker, portal: Option<PortalSession>) -> WorkerStats {
-        let stats = worker.stop().await;
-        if let Some(p) = portal {
-            p.close().await;
+    /// Libera todo: hilo de codificación, PipeWire y la sesión del sistema
+    /// (portal o monitor virtual).
+    async fn release(&mut self) -> WorkerStats {
+        let stats = match self.capture.take() {
+            Some(c) => c.worker.stop().await,
+            None => WorkerStats::default(),
+        };
+        if let Some(system) = self.system.take() {
+            system.close().await;
         }
         stats
     }
+}
+
+/// Socket del PipeWire local de este usuario (`PIPEWIRE_REMOTE` o
+/// `$XDG_RUNTIME_DIR/pipewire-0`).
+fn local_pipewire() -> Result<OwnedFd> {
+    let socket = match std::env::var_os("PIPEWIRE_REMOTE") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => std::path::PathBuf::from(
+            std::env::var_os("XDG_RUNTIME_DIR").context("falta XDG_RUNTIME_DIR")?,
+        )
+        .join("pipewire-0"),
+    };
+    let stream = std::os::unix::net::UnixStream::connect(&socket)
+        .with_context(|| format!("conectando con PipeWire en {}", socket.display()))?;
+    Ok(stream.into())
 }
 
 /// Nodo de prueba de [`TEST_NODE_ENV`] y conexión al PipeWire local.
@@ -329,70 +385,26 @@ fn test_source() -> Result<Option<(u32, OwnedFd)>> {
         .to_str()
         .and_then(|s| s.parse().ok())
         .with_context(|| format!("{TEST_NODE_ENV} debe ser un id de nodo"))?;
-    let socket = match std::env::var_os("PIPEWIRE_REMOTE") {
-        Some(path) => std::path::PathBuf::from(path),
-        None => std::path::PathBuf::from(
-            std::env::var_os("XDG_RUNTIME_DIR").context("falta XDG_RUNTIME_DIR")?,
-        )
-        .join("pipewire-0"),
-    };
-    let stream = std::os::unix::net::UnixStream::connect(&socket)
-        .with_context(|| format!("conectando con PipeWire en {}", socket.display()))?;
     tracing::warn!("{TEST_NODE_ENV}={node}: se usa el nodo PipeWire local sin portal");
-    Ok(Some((node, stream.into())))
+    Ok(Some((node, local_pipewire()?)))
 }
 
-/// Paso 1 (antes de conectar con el receptor): comprueba el codificador, pide
-/// la pantalla al usuario y arranca la captura hasta tener el primer frame.
-pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
-    // OpenH264 primero: si falta, no tiene sentido mostrar el diálogo.
-    OpenH264Encoder::from_default_path(&EncoderConfig::desktop(640, 480, 60, 1000)).map_err(
-        |e| anyhow!("{e} (con el .deb el script está en /usr/lib/CrossScreen/fetch-openh264.sh)"),
-    )?;
-
-    let (node_id, fd, portal) = match test_source()? {
-        Some((node, fd)) => (node, fd, None),
-        None => {
-            tracing::info!("pidiendo la pantalla al XDG Desktop Portal (diálogo del sistema)");
-            let opened = tokio::time::timeout(PORTAL_TIMEOUT, PortalCaptureSession::open())
-                .await
-                .map_err(|_| {
-                    anyhow!(
-                        "no se respondió al diálogo de compartir pantalla en {} s",
-                        PORTAL_TIMEOUT.as_secs()
-                    )
-                })?
-                .map_err(|e| anyhow!("{}", describe_error(&e)))?;
-            let PortalCaptureSession {
-                stream,
-                pipewire_fd,
-                session,
-            } = opened;
-            tracing::info!(
-                node = stream.node_id,
-                size = ?stream.size,
-                "el portal autorizó la captura"
-            );
-            (stream.node_id, pipewire_fd, Some(session))
-        }
-    };
+/// Arranca la captura de `node_id` y espera su primer frame.
+async fn start_capture(
+    node_id: u32,
+    fd: OwnedFd,
+    cfg: &SenderConfig,
+    fixed_size: Option<(u32, u32)>,
+) -> Result<Capture> {
     let (video_tx, video_rx) = tokio_mpsc::channel(4);
     let (size_tx, mut size_rx) = watch::channel(None);
-    let worker = match LinuxWorker::start(node_id, fd, cfg, video_tx, size_tx) {
-        Ok(w) => w,
-        Err(e) => {
-            if let Some(p) = portal {
-                p.close().await;
-            }
-            return Err(e);
-        }
-    };
+    let worker = LinuxWorker::start(node_id, fd, fixed_size, cfg, video_tx, size_tx)?;
     let first = tokio::time::timeout(FIRST_FRAME_TIMEOUT, size_rx.wait_for(Option::is_some))
         .await
         .ok()
         .and_then(|r| r.ok().and_then(|v| *v));
     let Some((width, height)) = first else {
-        let stats = Prepared::release(worker, portal).await;
+        let stats = worker.stop().await;
         bail!(
             "PipeWire no entregó ningún frame en {} s (capturados: {}){}",
             FIRST_FRAME_TIMEOUT.as_secs(),
@@ -401,25 +413,102 @@ pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
         );
     };
     tracing::info!("captura lista: {width}x{height}");
-    Ok(Prepared {
-        portal,
-        worker: Some(worker),
+    Ok(Capture {
+        worker,
         video_rx: Some(video_rx),
         size_rx,
     })
 }
 
+/// Paso 1 (antes de conectar con el receptor): comprueba el codificador y,
+/// para duplicar, pide la pantalla al usuario y arranca la captura.
+pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
+    // OpenH264 primero: si falta, no tiene sentido seguir.
+    OpenH264Encoder::from_default_path(&EncoderConfig::desktop(640, 480, 60, 1000)).map_err(
+        |e| anyhow!("{e} (con el .deb el script está en /usr/lib/CrossScreen/fetch-openh264.sh)"),
+    )?;
+
+    if let Some((node, fd)) = test_source()? {
+        let capture = start_capture(node, fd, cfg, None).await?;
+        return Ok(Prepared {
+            system: None,
+            capture: Some(capture),
+            extend: false,
+        });
+    }
+
+    if cfg.mode == StreamMode::Extend {
+        if !MutterVirtual::is_available().await {
+            bail!("{}", cs_capture::linux_mutter::MutterError::NotAvailable);
+        }
+        return Ok(Prepared {
+            system: None,
+            capture: None,
+            extend: true,
+        });
+    }
+
+    tracing::info!("pidiendo la pantalla al XDG Desktop Portal (diálogo del sistema)");
+    let opened = tokio::time::timeout(PORTAL_TIMEOUT, PortalCaptureSession::open())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "no se respondió al diálogo de compartir pantalla en {} s",
+                PORTAL_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| anyhow!("{}", describe_error(&e)))?;
+    let PortalCaptureSession {
+        stream,
+        pipewire_fd,
+        session,
+    } = opened;
+    tracing::info!(
+        node = stream.node_id,
+        size = ?stream.size,
+        "el portal autorizó la captura"
+    );
+    let mut prepared = Prepared {
+        system: Some(SystemSession::Portal(session)),
+        capture: None,
+        extend: false,
+    };
+    // Si falla, `prepared` se suelta y cierra la sesión del portal.
+    prepared.capture = Some(start_capture(stream.node_id, pipewire_fd, cfg, None).await?);
+    Ok(prepared)
+}
+
+/// Extender: crea el monitor virtual de GNOME con la resolución `size` y
+/// arranca su captura.
+async fn open_virtual_monitor(
+    prepared: &mut Prepared,
+    cfg: &SenderConfig,
+    size: (u32, u32),
+) -> Result<()> {
+    tracing::info!("creando monitor virtual de GNOME {}x{}", size.0, size.1);
+    let mutter = MutterVirtual::open().await?;
+    let node = mutter.node_id;
+    prepared.system = Some(SystemSession::Mutter(mutter));
+    let fd = local_pipewire()?;
+    prepared.capture = Some(start_capture(node, fd, cfg, Some(size)).await?);
+    Ok(())
+}
+
+/// Resolución para el monitor virtual: la pedida o la nativa del receptor,
+/// en dimensiones pares (H.264 4:2:0).
+fn virtual_size(requested: Option<Mode>, native: Mode) -> (u32, u32) {
+    let m = requested.unwrap_or(native);
+    ((m.width & !1).max(2), (m.height & !1).max(2))
+}
+
 /// Paso 2: sesión con el receptor sobre `conn` hasta que termine. Libera
-/// siempre la captura y el portal antes de volver.
+/// siempre la captura y la sesión del sistema antes de volver.
 pub(crate) async fn run(
     conn: Connection,
     cfg: SenderConfig,
     prepared: Prepared,
     shutdown: watch::Receiver<bool>,
 ) -> Result<SenderReport> {
-    if cfg.mode == StreamMode::Extend {
-        tracing::warn!("Linux aún no crea pantallas virtuales: se duplica la pantalla elegida");
-    }
     if cfg.accept_input {
         tracing::info!("la entrada remota aún no está disponible en el emisor Linux");
     }
@@ -428,23 +517,9 @@ pub(crate) async fn run(
     }
     let started_at = Instant::now();
     let mut prepared = prepared;
-    let (Some(worker), Some(video_rx)) = (prepared.worker.take(), prepared.video_rx.take()) else {
-        bail!("fuente Linux ya usada");
-    };
-    let portal = prepared.portal.take();
-    let size_rx = prepared.size_rx.clone();
+    let outcome = session(&conn, &cfg, &mut prepared, shutdown).await;
+    let worker_stats = prepared.release().await;
     drop(prepared);
-    let outcome = session(
-        &conn,
-        &cfg,
-        &worker,
-        video_rx,
-        &size_rx,
-        portal.as_ref(),
-        shutdown,
-    )
-    .await;
-    let worker_stats = Prepared::release(worker, portal).await;
     let (end_reason, control, send_task) = match outcome {
         Ok(v) => v,
         Err(e) => {
@@ -485,10 +560,7 @@ type SessionOutcome = (
 async fn session(
     conn: &Connection,
     cfg: &SenderConfig,
-    worker: &LinuxWorker,
-    video_rx: tokio_mpsc::Receiver<LinuxUnit>,
-    size_rx: &watch::Receiver<Option<(u32, u32)>>,
-    portal: Option<&PortalSession>,
+    prepared: &mut Prepared,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<SessionOutcome> {
     let mut ctl = FramedStream::new(conn.open_bi().await.context("abriendo canal de control")?);
@@ -507,44 +579,68 @@ async fn session(
     if !sink.decoders.iter().any(|d| d.codec == Codec::H264) {
         bail!("el receptor no anuncia decodificador H.264");
     }
+    let stream_mode = if prepared.extend {
+        // Extender: el monitor virtual toma la resolución del receptor. El
+        // visor espera StartStream 10 s; crear el monitor tarda ~1 s.
+        let size = virtual_size(cfg.requested_mode, sink.native_mode);
+        if let Err(e) = open_virtual_monitor(prepared, cfg, size).await {
+            let _ = ctl
+                .send(&ControlMessage::Bye {
+                    reason: ByeReason::Error,
+                })
+                .await;
+            ctl.finish();
+            return Err(e);
+        }
+        StreamMode::Extend
+    } else {
+        StreamMode::Duplicate
+    };
+    let capture = prepared
+        .capture
+        .as_mut()
+        .context("la captura no está en marcha")?;
     // Tamaño real más reciente de la captura (puede haber cambiado).
-    let (width, height) = (*size_rx.borrow()).context("sin tamaño de captura")?;
+    let (width, height) = (*capture.size_rx.borrow()).context("sin tamaño de captura")?;
     let mode = Mode::new(width, height, 60);
     ctl.send(&ControlMessage::StartStream(StartStream {
         stream_id: STREAM_ID,
-        mode: StreamMode::Duplicate,
+        mode: stream_mode,
         codec: Codec::H264,
         display_mode: mode,
         bitrate_kbps: cfg.bitrate_kbps,
     }))
     .await?;
     expect_started(&mut ctl).await?;
+    let video_rx = capture.video_rx.take().context("fuente Linux ya usada")?;
     let send_task = tokio::spawn(send_video(
         conn.clone(),
         video_rx,
         cfg.clone(),
         Duration::from_micros(16_667),
     ));
+    let worker = &capture.worker;
     worker.shared.force_idr.store(true, Ordering::Relaxed);
     worker.shared.streaming.store(true, Ordering::Relaxed);
-    tracing::info!("transmisión iniciada: {width}x{height}");
+    tracing::info!("transmisión iniciada ({stream_mode:?}): {width}x{height}");
 
     let mut cs = ControlStats::default();
     let mut last_forced: Option<Instant> = None;
     let deadline = cfg.duration.map(|d| tokio::time::Instant::now() + d);
     let mut health = tokio::time::interval(Duration::from_secs(1));
-    // Señal del portal: el usuario dejó de compartir desde el sistema.
-    let portal_closed = async {
-        match portal {
-            Some(p) => p.wait_closed().await,
+    // Señal del sistema: el usuario dejó de compartir desde GNOME.
+    let system = prepared.system.as_ref();
+    let system_closed = async {
+        match system {
+            Some(s) => s.wait_closed().await,
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::pin!(portal_closed);
+    tokio::pin!(system_closed);
     let end_reason = loop {
         tokio::select! {
             _ = health.tick() => {}
-            _ = &mut portal_closed => {
+            _ = &mut system_closed => {
                 break "se dejó de compartir la pantalla desde el sistema".to_owned();
             }
             result = shutdown.changed() => {
@@ -695,4 +791,21 @@ async fn send_video(
         stats.max_pacing_late = stats.max_pacing_late.max(result.max_late);
     }
     stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::virtual_size;
+    use cs_core::Mode;
+
+    #[test]
+    fn virtual_monitor_uses_receiver_mode_with_even_size() {
+        let native = Mode::new(1366, 768, 60);
+        assert_eq!(virtual_size(None, native), (1366, 768));
+        assert_eq!(virtual_size(None, Mode::new(1365, 767, 60)), (1364, 766));
+        assert_eq!(
+            virtual_size(Some(Mode::new(2560, 1440, 60)), native),
+            (2560, 1440)
+        );
+    }
 }

@@ -14,7 +14,11 @@ Tu PC con Windows (PC-A) **extiende su escritorio** y el equipo Linux (PC-B) lo 
 
 ## Linux como fuente: Ubuntu → Windows (experimental)
 
-Ubuntu **duplica** la pantalla que elijas en el diálogo de GNOME (aún no crea una pantalla extra). Requisitos: los dos equipos emparejados y OpenH264 instalado en Ubuntu (`./fetch-openh264.sh`, ver paso 3; con el `.deb` está en `/usr/lib/CrossScreen/fetch-openh264.sh`).
+Dos modos:
+- **Extender** (por defecto): GNOME crea un **monitor virtual** con la resolución de la pantalla de Windows y Windows lo muestra. Sin diálogo. Necesita GNOME en **Wayland** (lo normal en Ubuntu 22.04/24.04; en la pantalla de inicio de sesión no elijas «Ubuntu en Xorg»). El monitor aparece en *Configuración → Pantallas*, donde puedes colocarlo a la izquierda o a la derecha; al terminar desaparece solo.
+- **Duplicar**: Windows muestra la pantalla que elijas en el diálogo de GNOME.
+
+Requisitos: los dos equipos emparejados y OpenH264 instalado en Ubuntu (`./fetch-openh264.sh`, ver paso 3; con el `.deb` está en `/usr/lib/CrossScreen/fetch-openh264.sh`).
 
 1. **En Windows (receptor):** en el panel, «Recibir pantalla»; o por consola `crossscreen-viewer.exe --listen 0.0.0.0:47810`.
    **La primera vez que ese PC recibe**, Windows muestra el aviso del firewall para `crossscreen-viewer`: pulsa **Permitir** (redes privadas). Si lo bloqueas, Ubuntu no podrá conectar («no se pudo conectar… comprueba el firewall»).
@@ -22,13 +26,13 @@ Ubuntu **duplica** la pantalla que elijas en el diálogo de GNOME (aún no crea 
    ```bash
    ./crossscreen stream <IP_DEL_WINDOWS>:47810 --peer <HUELLA_DEL_WINDOWS>
    ```
-3. GNOME abre su diálogo: elige la pantalla y pulsa **Compartir**. Tienes hasta 2 minutos; la conexión con Windows se abre **después** de aceptar, así que no hay prisa.
+3. Solo al **duplicar**: GNOME abre su diálogo; elige la pantalla y pulsa **Compartir**. Tienes hasta 2 minutos; la conexión con Windows se abre **después** de aceptar, así que no hay prisa.
 4. Para terminar: «Detener transmisión» en el panel, Ctrl+C en la consola, cerrar la ventana del visor en Windows o «Dejar de compartir» en la barra superior de GNOME. Al terminar, GNOME apaga su indicador de pantalla compartida.
 
 Cómo funciona y qué falta:
 - Con la pantalla quieta GNOME no envía imágenes nuevas; CrossScreen reenvía la última una vez por segundo, así que la imagen aparece al instante aunque nada se mueva.
 - Codificación por CPU (OpenH264): en las pruebas, ~10 ms por frame a 1080p.
-- Aún no: ratón y teclado desde Windows hacia Ubuntu, portapapeles, ni pantalla extendida.
+- Aún no: ratón y teclado desde Windows hacia Ubuntu, ni portapapeles. Para usar el monitor extendido, mueve el ratón de Ubuntu hacia ese lado de la pantalla.
 
 ## 1. Requisitos (Ubuntu 24.04, x86_64)
 Ubuntu Desktop ya trae casi todo. Si falta algo:
