@@ -134,8 +134,8 @@ fn run_i420(
             else {
                 return;
             };
-            if media_type != pw::spa::param::format::MediaType::Video
-                || media_subtype != pw::spa::param::format::MediaSubtype::Raw
+            if media_type != pw::spa::format::MediaType::Video
+                || media_subtype != pw::spa::format::MediaSubtype::Raw
             {
                 return;
             }
@@ -173,7 +173,7 @@ fn run_i420(
             let c_len = width as usize / 2 * half_height;
             let (y, u, v, strides) = if buffer.datas_mut().len() >= 3 {
                 let planes = buffer.datas_mut();
-                let copy_plane = |plane: &mut spa::buffer::Data| {
+                let copy_plane = |plane: &mut spa::data::Data| {
                     let size = plane.chunk().size() as usize;
                     plane
                         .data()
@@ -214,17 +214,17 @@ fn run_i420(
         pw::spa::utils::SpaTypes::ObjectParamFormat,
         pw::spa::param::ParamType::EnumFormat,
         pw::spa::pod::property!(
-            pw::spa::param::format::FormatProperties::MediaType,
+            pw::spa::format::FormatProperties::MediaType,
             Id,
-            pw::spa::param::format::MediaType::Video
+            pw::spa::format::MediaType::Video
         ),
         pw::spa::pod::property!(
-            pw::spa::param::format::FormatProperties::MediaSubtype,
+            pw::spa::format::FormatProperties::MediaSubtype,
             Id,
-            pw::spa::param::format::MediaSubtype::Raw
+            pw::spa::format::MediaSubtype::Raw
         ),
         pw::spa::pod::property!(
-            pw::spa::param::format::FormatProperties::VideoFormat,
+            pw::spa::format::FormatProperties::VideoFormat,
             Choice,
             Enum,
             Id,
@@ -232,7 +232,7 @@ fn run_i420(
             pw::spa::param::video::VideoFormat::I420
         ),
         pw::spa::pod::property!(
-            pw::spa::param::format::FormatProperties::VideoSize,
+            pw::spa::format::FormatProperties::VideoSize,
             Choice,
             Range,
             Rectangle,
@@ -250,7 +250,7 @@ fn run_i420(
             }
         ),
         pw::spa::pod::property!(
-            pw::spa::param::format::FormatProperties::VideoFramerate,
+            pw::spa::format::FormatProperties::VideoFramerate,
             Choice,
             Range,
             Fraction,
@@ -268,9 +268,9 @@ fn run_i420(
     .into_inner();
     let pod = spa::pod::Pod::from_bytes(&values)
         .ok_or_else(|| PipeWireCaptureError::Format("formato PipeWire inválido".into()))?;
-    let mut params = [pod as *const spa::pod::Pod as *const libspa_sys::spa_pod];
+    let mut params = [pod];
     stream.connect(
-        spa::utils::Direction::Input,
+        spa::Direction::Input,
         Some(node_id),
         pw::stream::StreamFlags::AUTOCONNECT
             | pw::stream::StreamFlags::MAP_BUFFERS
@@ -278,7 +278,7 @@ fn run_i420(
         &mut params,
     )?;
     let stop_loop = main_loop.clone();
-    let _stop_listener = stop_rx.attach(main_loop.loop_(), move |_| stop_loop.quit());
+    let _stop_listener = stop_rx.attach(main_loop.as_ref(), move |_| stop_loop.quit());
     let _stream = stream;
     let _listener = _listener;
     main_loop.run();
