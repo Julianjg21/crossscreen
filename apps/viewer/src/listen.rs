@@ -146,12 +146,18 @@ impl ListenApp {
             );
         }
         let monitor = match self.args.monitor {
-            Some(n) => Some(
-                monitors
-                    .get(n)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("no existe el monitor {n}"))?,
-            ),
+            Some(n) if n < monitors.len() => Some(monitors[n].clone()),
+            Some(n) => {
+                // Varias pantallas (ADR-0009) en un equipo con menos monitores
+                // físicos: este visor va en ventana al principal en vez de
+                // tapar a pantalla completa al de otro monitor.
+                cs_log::err_out!(
+                    "AVISO: no existe el monitor {n} ({} conectados); se usa el principal en ventana",
+                    monitors.len()
+                );
+                self.args.fullscreen = false;
+                el.primary_monitor().or_else(|| monitors.first().cloned())
+            }
             None => el.primary_monitor().or_else(|| monitors.first().cloned()),
         };
         let refresh_mhz = monitor
@@ -198,6 +204,7 @@ impl ListenApp {
             keyframe_policy: self.args.keyframe_policy,
             clipboard: self.args.clipboard,
             audio: self.args.audio,
+            announce: !self.args.no_announce,
         };
         self.net = Some(net::spawn(cfg, self.proxy.clone(), cmd_rx)?);
         self.net_cmd = Some(cmd_tx);

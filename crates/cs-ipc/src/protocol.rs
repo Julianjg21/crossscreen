@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 5 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 6 };
 
 /// Identificador de la compilación (`git describe`), inyectado con la variable
 /// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
@@ -131,6 +131,10 @@ pub enum Request {
         /// Enviar el audio del sistema si el receptor lo pide (IPC 1.5).
         #[serde(default)]
         audio: bool,
+        /// Monitores virtuales a la vez (IPC 1.6, solo extender). 0 o 1: uno.
+        /// El monitor `i` va al puerto del receptor + `i` (ADR-0009).
+        #[serde(default)]
+        monitors: u8,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -144,6 +148,10 @@ pub enum Request {
         /// Pedir y reproducir el audio de la fuente (IPC 1.5).
         #[serde(default)]
         audio: bool,
+        /// Pantallas que se reciben a la vez (IPC 1.6): un visor por pantalla
+        /// en `port`, `port + 1`… 0 o 1: una.
+        #[serde(default)]
+        screens: u8,
     },
     /// Detiene el visor receptor en curso (si lo hay).
     StopReceiver,
@@ -264,6 +272,9 @@ pub struct DiscoveredDevice {
     pub pairing_port: Option<u16>,
     /// Si su device id coincide con un par de confianza.
     pub paired: bool,
+    /// Pantallas que ofrece si está recibiendo (IPC 1.6; 0 = no lo anuncia).
+    #[serde(default)]
+    pub screens: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,6 +331,9 @@ pub struct StreamSessionInfo {
     pub initial_rtt_us: u64,
     /// Segundos desde la época Unix en que se inició la sesión.
     pub started_at: u64,
+    /// Monitores de la sesión (IPC 1.6; 0 en agentes anteriores = 1).
+    #[serde(default)]
+    pub monitors: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,6 +376,9 @@ pub struct StreamReportInfo {
     pub receiver_jitter_us: Option<u32>,
     pub receiver_decode_us: Option<u32>,
     pub error: Option<String>,
+    /// Informes de los monitores 2.º en adelante (IPC 1.6); este es el del 1.º.
+    #[serde(default)]
+    pub other_monitors: Vec<StreamReportInfo>,
 }
 
 /// Recepción automática al arrancar el agente (IPC 1.4).
@@ -373,6 +390,8 @@ pub struct ReceiverAutoStartInfo {
     pub clipboard: bool,
     #[serde(default)]
     pub audio: bool,
+    #[serde(default)]
+    pub screens: u8,
 }
 
 /// Ajustes de arranque (IPC 1.4).
@@ -392,6 +411,9 @@ pub struct ReceiverSessionInfo {
     pub fullscreen: bool,
     pub pid: u32,
     pub started_at: u64,
+    /// Visores en marcha (IPC 1.6; 0 en agentes anteriores = 1).
+    #[serde(default)]
+    pub screens: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,7 +463,8 @@ mod tests {
                     port: 47810,
                     fullscreen: true,
                     clipboard: false,
-                    audio: false
+                    audio: false,
+                    screens: 0,
                 }),
             }
         );
@@ -520,6 +543,7 @@ mod tests {
                 clipboard: true,
                 accept_input: Some(false),
                 audio: false,
+                monitors: 2,
             },
             Request::StopStream,
             Request::StartReceiver {
@@ -527,6 +551,7 @@ mod tests {
                 fullscreen: true,
                 clipboard: false,
                 audio: true,
+                screens: 2,
             },
             Request::StopReceiver,
             Request::Shutdown,
@@ -555,6 +580,7 @@ mod tests {
             session_port: 0,
             pairing_port: Some(5000),
             paired: false,
+            screens: 2,
         };
         let msgs = [
             AgentMessage::Welcome {
@@ -631,6 +657,7 @@ mod tests {
                         profile: StreamProfileInfo::Auto,
                         initial_rtt_us: 12_500,
                         started_at: 1_700_000_100,
+                        monitors: 2,
                     },
                 }),
             },
@@ -680,6 +707,7 @@ mod tests {
                         receiver_jitter_us: Some(10_663),
                         receiver_decode_us: Some(681),
                         error: None,
+                        other_monitors: Vec::new(),
                     }),
                 },
             },

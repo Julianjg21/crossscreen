@@ -253,6 +253,7 @@ async fn cmd_pair_listen(ctx: &Ctx, bind: SocketAddr, mdns: bool) -> Result<()> 
             protocol_major: PROTOCOL_VERSION.major,
             session_port: 0,
             pairing_port: Some(port),
+            screens: 1,
         })?;
         Some(d)
     } else {

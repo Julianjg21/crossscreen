@@ -89,6 +89,11 @@ pub struct StreamArgs {
     /// defecto: por defecto solo se transmite la imagen).
     #[arg(long)]
     pub audio: bool,
+    /// Monitores virtuales a la vez (solo `extend`, máx. 4). El monitor `i`
+    /// va al puerto del receptor + `i` (un `crossscreen-viewer --listen` por
+    /// puerto). El portapapeles y el audio viajan solo con el primero.
+    #[arg(long, default_value_t = 1)]
+    pub monitors: u8,
     /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
     /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
     #[arg(long)]
@@ -150,6 +155,8 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
         let _ = stop_tx.send(true);
     });
 
+    let monitors =
+        cs_pipeline::multi::check_monitors(a.monitors, cfg.mode).map_err(|e| anyhow::anyhow!(e))?;
     let bind: SocketAddr = if a.addr.is_ipv6() {
         "[::]:0"
     } else {
@@ -169,27 +176,63 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     if cfg.mode == StreamMode::Duplicate {
         cs_log::out!("Elige la pantalla en el diálogo del sistema…");
     }
-    let source = cs_pipeline::prepare_source(&cfg).await?;
-    let conn = endpoint
-        .connect(a.addr, PeerPolicy::Exactly(peer), ALPN)
-        .await
-        .with_context(|| {
-            format!(
-                "no se pudo conectar con el receptor {}. Comprueba que esté escuchando (crossscreen-viewer --listen, o «Recibir pantalla» en el panel) y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)",
-                a.addr
-            )
-        })?;
-    cs_log::out!(
-        "Conectado a {} ({}) — RTT {:?}, datagrama máx. {:?} B",
-        conn.remote_addr(),
-        conn.peer_fingerprint().short(),
-        conn.rtt(),
-        conn.max_datagram_size()
-    );
-    let report = cs_pipeline::run_sender(conn, cfg, source, stop_rx).await?;
-    cs_log::out!("{report}");
+    // Un monitor = una sesión independiente al puerto base + i (ADR-0009).
+    let mut sessions = Vec::with_capacity(usize::from(monitors));
+    for i in 0..monitors {
+        let addr = cs_pipeline::multi::monitor_addr(a.addr, i)
+            .context("el puerto del receptor es demasiado alto para tantos monitores")?;
+        let cfg_i = cs_pipeline::multi::monitor_config(&cfg, i);
+        let source = cs_pipeline::prepare_source(&cfg_i).await?;
+        let conn = endpoint
+            .connect(addr, PeerPolicy::Exactly(peer), ALPN)
+            .await
+            .with_context(|| {
+                format!(
+                    "no se pudo conectar con el receptor {addr}. Comprueba que esté escuchando (crossscreen-viewer --listen, o «Recibir pantalla» en el panel) y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)"
+                )
+            })?;
+        cs_log::out!(
+            "{}Conectado a {} ({}) — RTT {:?}, datagrama máx. {:?} B",
+            if monitors > 1 {
+                format!("Monitor {}: ", i + 1)
+            } else {
+                String::new()
+            },
+            conn.remote_addr(),
+            conn.peer_fingerprint().short(),
+            conn.rtt(),
+            conn.max_datagram_size()
+        );
+        sessions.push((cfg_i, source, conn));
+    }
+    let tasks: Vec<_> = sessions
+        .into_iter()
+        .map(|(cfg_i, source, conn)| {
+            tokio::spawn(cs_pipeline::run_sender(
+                conn,
+                cfg_i,
+                source,
+                stop_rx.clone(),
+            ))
+        })
+        .collect();
+    let mut results = Vec::with_capacity(tasks.len());
+    for t in tasks {
+        results.push(t.await.context("tarea del monitor")?);
+    }
     endpoint.close();
-    if let Some(e) = &report.worker.fatal {
+    let mut fatal = None;
+    for (i, res) in results.into_iter().enumerate() {
+        if monitors > 1 {
+            cs_log::out!("— Monitor {} —", i + 1);
+        }
+        let report = res?;
+        cs_log::out!("{report}");
+        if let Some(e) = &report.worker.fatal {
+            fatal.get_or_insert_with(|| e.clone());
+        }
+    }
+    if let Some(e) = fatal {
         bail!("la sesión terminó por un fallo de captura/codificación: {e}");
     }
     Ok(())

@@ -14,6 +14,7 @@
 pub mod audio;
 pub mod cursor;
 pub mod display_guard;
+pub mod multi;
 mod reconnect;
 pub mod stats;
 pub mod timing;

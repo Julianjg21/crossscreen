@@ -4,9 +4,31 @@
 //! Lo que no puede cubrir ningún `Drop`: matar el proceso a la fuerza
 //! (`TerminateProcess`, cerrar la consola sin manejador). Para Ctrl+C y el
 //! cierre de consola la CLI convierte la señal en una parada ordenada.
+//!
+//! Varias sesiones a la vez (varios monitores, ADR-0009): cada guardia
+//! **reclama** un destino virtual distinto en un registro del proceso, y los
+//! cambios de topología se serializan con el mismo cerrojo.
 
 use cs_core::Mode;
-use cs_display::{DisplayError, Displays, ShownDisplay, TargetKey};
+use cs_display::{DisplayError, DisplayTarget, Displays, ShownDisplay, TargetKey};
+use std::sync::Mutex;
+
+/// Destinos virtuales en uso por las guardias vivas de este proceso. El
+/// cerrojo también serializa `show`/`hide` (CCD no admite cambios simultáneos).
+static CLAIMED: Mutex<Vec<TargetKey>> = Mutex::new(Vec::new());
+
+fn claimed() -> std::sync::MutexGuard<'static, Vec<TargetKey>> {
+    CLAIMED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Primer destino virtual que no use otra sesión de este proceso.
+fn pick_free(targets: &[DisplayTarget], claimed: &[TargetKey]) -> Option<TargetKey> {
+    targets
+        .iter()
+        .filter(|t| t.is_virtual && !claimed.contains(&t.key))
+        .map(|t| t.key)
+        .next()
+}
 
 /// Monitor virtual mostrado por esta sesión.
 #[derive(Debug)]
@@ -18,13 +40,24 @@ pub struct VirtualDisplayGuard {
 impl VirtualDisplayGuard {
     /// Muestra el primer modo de `candidates` que el driver admita.
     /// Solo pasa al siguiente candidato si el error es "modo no disponible".
+    /// Con varias sesiones simultáneas, cada una recibe un destino virtual
+    /// libre; si no queda ninguno devuelve [`DisplayError::NoVirtualTarget`].
     pub fn show_first(candidates: &[Mode]) -> Result<Self, DisplayError> {
         let displays = Displays::new();
+        let mut claimed = claimed();
+        let key = pick_free(&displays.targets()?, &claimed).ok_or_else(|| {
+            tracing::warn!(
+                en_uso = claimed.len(),
+                "no queda ningún monitor virtual libre en el driver"
+            );
+            DisplayError::NoVirtualTarget
+        })?;
         let mut last = DisplayError::NoVirtualTarget;
         for &m in candidates {
-            match displays.show(None, m) {
+            match displays.show(Some(key), m) {
                 Ok(shown) => {
                     tracing::info!(gdi = %shown.gdi_name, mode = ?shown.mode, "monitor virtual mostrado");
+                    claimed.push(shown.key);
                     return Ok(Self {
                         displays,
                         shown: Some(shown),
@@ -55,7 +88,9 @@ impl VirtualDisplayGuard {
 }
 
 fn hide_key(d: &Displays, key: TargetKey) -> Result<(), DisplayError> {
+    let mut claimed = claimed();
     let r = d.hide(key);
+    claimed.retain(|k| *k != key);
     match &r {
         Ok(()) => tracing::info!("monitor virtual retirado"),
         Err(e) => tracing::error!("no se pudo retirar el monitor virtual: {e}"),
@@ -95,6 +130,33 @@ pub fn mode_candidates(requested: Option<Mode>, native: Mode, fallback: Mode) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target(id: u32, is_virtual: bool) -> DisplayTarget {
+        DisplayTarget {
+            key: TargetKey {
+                adapter_low: 1,
+                adapter_high: 0,
+                target_id: id,
+            },
+            friendly_name: String::new(),
+            device_path: String::new(),
+            is_virtual,
+            active: false,
+            gdi_name: None,
+        }
+    }
+
+    #[test]
+    fn each_session_gets_a_distinct_virtual_target() {
+        let ts = [target(1, false), target(2, true), target(3, true)];
+        let a = pick_free(&ts, &[]).unwrap();
+        assert_eq!(a.target_id, 2);
+        let b = pick_free(&ts, &[a]).unwrap();
+        assert_eq!(b.target_id, 3);
+        assert_eq!(pick_free(&ts, &[a, b]), None);
+        // Los monitores físicos nunca se eligen.
+        assert_eq!(pick_free(&ts[..1], &[]), None);
+    }
 
     #[test]
     fn candidates_prefer_cli_then_native() {

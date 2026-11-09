@@ -59,6 +59,8 @@ pub struct NetConfig {
     pub clipboard: bool,
     /// Pedir y reproducir el audio de la fuente (ADR-0008).
     pub audio: bool,
+    /// Anunciarse por mDNS (no si lo lanza el agente, que ya lo anuncia).
+    pub announce: bool,
 }
 
 /// Arranca el hilo de red. Al terminar envía `UserEvent::NetDone`.
@@ -339,8 +341,14 @@ async fn run(
     let endpoint = Endpoint::server(cfg.bind, identity.clone(), policy, ALPN)
         .with_context(|| format!("escuchando en {}", cfg.bind))?;
     let local_addr = endpoint.local_addr()?;
-    let _mdns = match cs_discovery::Discovery::new() {
-        Ok(mut d) => {
+    let mdns = if cfg.announce {
+        cs_discovery::Discovery::new().map(Some)
+    } else {
+        Ok(None)
+    };
+    let _mdns = match mdns {
+        Ok(None) => None,
+        Ok(Some(mut d)) => {
             let a = cs_discovery::Announcement {
                 device_id: identity.fingerprint().device_id(),
                 name: std::env::var("COMPUTERNAME")
@@ -353,6 +361,7 @@ async fn run(
                 protocol_major: PROTOCOL_VERSION.major,
                 session_port: local_addr.port(),
                 pairing_port: None,
+                screens: 1,
             };
             if let Err(e) = d.announce(&a) {
                 tracing::warn!("no se pudo anunciar el visor por mDNS: {e}");

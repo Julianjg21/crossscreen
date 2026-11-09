@@ -51,6 +51,8 @@ export interface DiscoveredDevice {
   session_port: number;
   pairing_port: number | null;
   paired: boolean;
+  /** IPC 1.6: pantallas que recibe a la vez (0 o ausente = 1). */
+  screens?: number;
 }
 
 export interface ModeInfo {
@@ -82,6 +84,8 @@ export interface StreamSessionInfo {
   profile?: StreamProfileInfo;
   initial_rtt_us: number;
   started_at: number;
+  /** IPC 1.6: monitores de la sesión (0 o ausente = 1). */
+  monitors?: number;
 }
 
 export interface LatencySummary {
@@ -120,6 +124,8 @@ export interface StreamReportInfo {
   receiver_jitter_us: number | null;
   receiver_decode_us: number | null;
   error: string | null;
+  /** IPC 1.6: informes de los monitores 2.º en adelante. */
+  other_monitors?: StreamReportInfo[];
 }
 
 /** IPC 1.4: recepción automática al arrancar el agente. */
@@ -128,6 +134,8 @@ export interface ReceiverAutoStartInfo {
   fullscreen: boolean;
   clipboard: boolean;
   audio?: boolean;
+  /** IPC 1.6: pantallas a la vez. */
+  screens?: number;
 }
 
 /** IPC 1.4: ajustes de arranque. */
@@ -143,6 +151,8 @@ export interface ReceiverSessionInfo {
   fullscreen: boolean;
   pid: number;
   started_at: number;
+  /** IPC 1.6: visores en marcha. */
+  screens?: number;
 }
 
 export type Request =
@@ -169,6 +179,8 @@ export type Request =
       accept_input?: boolean;
       /** IPC 1.5: enviar el audio del sistema si el receptor lo pide. */
       audio?: boolean;
+      /** IPC 1.6: monitores virtuales a la vez (solo extender). */
+      monitors?: number;
     }
   | { kind: "stop_stream" }
   | {
@@ -178,6 +190,8 @@ export type Request =
       clipboard: boolean;
       /** IPC 1.5: pedir y reproducir el audio de la fuente. */
       audio?: boolean;
+      /** IPC 1.6: pantallas a la vez (un visor por pantalla, puertos consecutivos). */
+      screens?: number;
     }
   | { kind: "stop_receiver" }
   | { kind: "install_open_h264" }

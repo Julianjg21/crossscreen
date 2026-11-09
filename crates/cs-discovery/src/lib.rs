@@ -17,6 +17,7 @@ const TXT_VERSION: &str = "v";
 const TXT_ROLES: &str = "r";
 const TXT_NAME: &str = "n";
 const TXT_PAIRING_PORT: &str = "pp";
+const TXT_SCREENS: &str = "sc";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DiscoveryError {
@@ -33,6 +34,9 @@ pub struct Announcement {
     pub protocol_major: u16,
     pub session_port: u16,
     pub pairing_port: Option<u16>,
+    /// Pantallas que recibe a la vez (visores en `session_port`,
+    /// `session_port + 1`…). Solo se anuncia si es mayor que 1.
+    pub screens: u8,
 }
 
 /// Un par descubierto en la red.
@@ -46,6 +50,8 @@ pub struct DiscoveredPeer {
     pub addresses: Vec<IpAddr>,
     pub session_port: u16,
     pub pairing_port: Option<u16>,
+    /// Pantallas que recibe a la vez (1 si no lo anuncia).
+    pub screens: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +69,9 @@ impl Announcement {
         m.insert(TXT_NAME.into(), self.name.chars().take(63).collect());
         if let Some(p) = self.pairing_port {
             m.insert(TXT_PAIRING_PORT.into(), p.to_string());
+        }
+        if self.screens > 1 {
+            m.insert(TXT_SCREENS.into(), self.screens.to_string());
         }
         m
     }
@@ -90,6 +99,11 @@ pub fn parse_peer(
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| fullname.split('.').next().unwrap_or("?").to_owned());
     let pairing_port = txt.get(TXT_PAIRING_PORT).and_then(|p| p.parse().ok());
+    let screens = txt
+        .get(TXT_SCREENS)
+        .and_then(|s| s.parse::<u8>().ok())
+        .unwrap_or(1)
+        .clamp(1, 16);
     Some(DiscoveredPeer {
         fullname: fullname.to_owned(),
         device_id,
@@ -99,6 +113,7 @@ pub fn parse_peer(
         addresses,
         session_port: port,
         pairing_port,
+        screens,
     })
 }
 
@@ -220,6 +235,7 @@ mod tests {
             protocol_major: 0,
             session_port: 47000,
             pairing_port: Some(47001),
+            screens: 1,
         }
     }
 
@@ -238,6 +254,11 @@ mod tests {
         assert_eq!(p.roles, a.roles);
         assert_eq!(p.pairing_port, Some(47001));
         assert_eq!(p.session_port, 47000);
+        assert_eq!(p.screens, 1);
+        let mut two = ann();
+        two.screens = 2;
+        let p = parse_peer("x", &two.txt(), vec![], 47000).unwrap();
+        assert_eq!(p.screens, 2);
     }
 
     #[test]

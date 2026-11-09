@@ -94,6 +94,9 @@ export default function Stream({
   // Audio: desactivado por defecto en ambos lados.
   const [audio, setAudio] = useState(false);
   const [rxAudio, setRxAudio] = useState(false);
+  // Varios monitores (ADR-0009): uno por defecto en ambos lados.
+  const [monitors, setMonitors] = useState(1);
+  const [rxScreens, setRxScreens] = useState(1);
   const [busy, setBusy] = useState(false);
   const [rxBusy, setRxBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -258,6 +261,7 @@ export default function Stream({
           clipboard,
           accept_input: allowInput,
           audio,
+          monitors: mode === "extend" ? monitors : 1,
         },
         "stream_started",
       );
@@ -301,6 +305,7 @@ export default function Stream({
           fullscreen: rxFullscreen,
           clipboard: rxClipboard,
           audio: rxAudio,
+          screens: rxScreens,
         },
         "receiver_started",
       );
@@ -389,6 +394,15 @@ export default function Stream({
                 ? "Extender escritorio (monitor virtual)"
                 : "Duplicar pantalla principal"}
             </dd>
+            {(active.monitors ?? 1) > 1 && (
+              <>
+                <dt>Monitores</dt>
+                <dd>
+                  {active.monitors} monitores virtuales (puertos consecutivos desde el de la
+                  dirección)
+                </dd>
+              </>
+            )}
             <dt>Resolución pedida</dt>
             <dd>
               {active.mode_override
@@ -479,6 +493,37 @@ export default function Stream({
                     : "Duplicar pantalla principal"}
                 </option>
               </select>
+
+              {mode === "extend" && (
+                <>
+                  <label htmlFor="stream-monitors">Monitores virtuales</label>
+                  <select
+                    id="stream-monitors"
+                    value={monitors}
+                    onChange={(e) => setMonitors(Number(e.target.value))}
+                    aria-describedby="stream-monitors-help"
+                  >
+                    {[1, 2, 3, 4].map((n) => (
+                      <option key={n} value={n}>
+                        {n === 1 ? "1 (por defecto)" : `${n} a la vez`}
+                      </option>
+                    ))}
+                  </select>
+                  {monitors > 1 && (
+                    <p id="stream-monitors-help" className="muted small" style={{ marginTop: 4 }}>
+                      Cada monitor va al puerto siguiente del receptor ({addrPortHint(addr, monitors)}):
+                      el receptor debe recibir {monitors} pantallas
+                      {discoveredForSelected && (discoveredForSelected.screens ?? 1) < monitors
+                        ? ` (ahora anuncia ${discoveredForSelected.screens ?? 1})`
+                        : ""}
+                      . El portapapeles y el audio van solo con el primero.
+                      {status.platform === "windows"
+                        ? " En Windows, el driver de monitor virtual debe tener al menos ese número de monitores."
+                        : ""}
+                    </p>
+                  )}
+                </>
+              )}
 
               <div className="form-inline" style={{ marginTop: 12 }}>
                 <div className="field" style={{ flex: 1 }}>
@@ -615,7 +660,11 @@ export default function Stream({
                 <code>UDP {receiver.listen_addr}</code> (anunciado por mDNS)
               </dd>
               <dt>Presentación</dt>
-              <dd>{receiver.fullscreen ? "Pantalla completa" : "En ventana"}</dd>
+              <dd>
+                {receiver.fullscreen ? "Pantalla completa" : "En ventana"}
+                {(receiver.screens ?? 1) > 1 &&
+                  ` · ${receiver.screens} pantallas (puertos ${receiver.port}–${receiver.port + (receiver.screens ?? 1) - 1})`}
+              </dd>
               <dt>Proceso del visor</dt>
               <dd>
                 PID <code>{receiver.pid}</code> · activo desde hace {formatElapsed(rxElapsed)}
@@ -662,6 +711,27 @@ export default function Stream({
                   <option value="fullscreen">Pantalla completa</option>
                   <option value="window">En ventana (1920 × 1080)</option>
                 </select>
+              </div>
+              <div className="field">
+                <label htmlFor="rx-screens">Pantallas a recibir</label>
+                <select
+                  id="rx-screens"
+                  value={rxScreens}
+                  onChange={(e) => setRxScreens(Number(e.target.value))}
+                  aria-describedby="rx-screens-help"
+                >
+                  {[1, 2, 3, 4].map((n) => (
+                    <option key={n} value={n}>
+                      {n === 1 ? "1 (por defecto)" : `${n} a la vez`}
+                    </option>
+                  ))}
+                </select>
+                {rxScreens > 1 && (
+                  <p id="rx-screens-help" className="muted" style={{ marginTop: 4 }}>
+                    Un visor por pantalla en los puertos {rxPort}–{Number(rxPort) + rxScreens - 1},
+                    cada uno en un monitor de este equipo.
+                  </p>
+                )}
               </div>
               <div className="field">
                 <label style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
@@ -792,6 +862,20 @@ export default function Stream({
               <dd>{formatLatency(lastReport.encode_us)}</dd>
               <dt>Captura → enviado (QPC)</dt>
               <dd>{formatLatency(lastReport.capture_to_sent_us)}</dd>
+              {(lastReport.other_monitors?.length ?? 0) > 0 && (
+                <>
+                  <dt>Otros monitores</dt>
+                  <dd>
+                    {lastReport.other_monitors!.map((m, i) => (
+                      <div key={i}>
+                        Monitor {i + 2} (<code>{m.remote_addr}</code>): {m.frames_sent} frames
+                        enviados en {(m.duration_ms / 1000).toFixed(1)} s — {m.end_reason}
+                        {m.error ? ` · fallo: ${m.error}` : ""}
+                      </div>
+                    ))}
+                  </dd>
+                </>
+              )}
               {lastReport.receiver_frames_received !== null && (
                 <>
                   <dt>Estadísticas del receptor</dt>
@@ -809,4 +893,12 @@ export default function Stream({
       )}
     </section>
   );
+}
+
+/** Rango de puertos de varios monitores a partir de «IP:puerto». */
+function addrPortHint(addr: string, monitors: number): string {
+  const m = /:(\d+)\s*$/.exec(addr);
+  if (!m) return "puerto base, base + 1…";
+  const base = Number(m[1]);
+  return `puertos ${base}–${base + monitors - 1}`;
 }

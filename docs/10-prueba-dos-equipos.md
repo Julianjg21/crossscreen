@@ -107,6 +107,15 @@ Al terminar, **cada lado imprime un resumen**. Cópialo de los dos equipos, indi
 .\crossscreen.exe bench 192.168.1.50:47800 --peer <prefijo> --mbps 50 --seconds 10
 ```
 
+## Varios monitores (opcional)
+
+Por defecto se transmite **un** monitor. Para extender el escritorio con varios a la vez (por ejemplo, las dos pantallas de un sobremesa):
+- **Receptor:** en «Recibir pantalla», elige «Pantallas a recibir: 2» (o 3, 4). Abre un visor por pantalla en el puerto elegido y los siguientes (47810, 47811…), cada uno en un monitor de ese equipo; si tiene menos monitores, los que sobran van en ventana.
+- **Emisor:** en «Transmitir», modo «Extender» y «Monitores virtuales: 2». Cada monitor virtual va al puerto siguiente del receptor.
+- En la CLI: `crossscreen stream IP:47810 --peer … --monitors 2` y un `crossscreen-viewer --listen 0.0.0.0:47810` / `:47811` por pantalla.
+
+El portapapeles y el audio viajan solo con el primer monitor; el ratón y el teclado funcionan en todos. En Windows, el driver de monitor virtual debe tener al menos tantos monitores como pidas: se ajusta una vez en su configuración (`monitors` → `count`, con permisos de administrador). Si no hay bastantes, el panel lo dice antes de conectar. En Linux (GNOME) no hace falta configurar nada.
+
 ## Audio (opcional)
 
 Por defecto solo se transmite la imagen. Para oír en el receptor lo que suena en el emisor:

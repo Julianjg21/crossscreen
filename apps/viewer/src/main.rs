@@ -117,6 +117,10 @@ pub struct Args {
     /// (desactivado por defecto: por defecto solo se transmite la imagen).
     #[arg(long)]
     pub audio: bool,
+    /// No anunciarse por mDNS (el agente lo lanza así: ya anuncia él el
+    /// equipo y cuántas pantallas recibe).
+    #[arg(long)]
+    pub no_announce: bool,
 }
 
 fn main() -> anyhow::Result<()> {

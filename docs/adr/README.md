@@ -15,3 +15,4 @@ Un ADR aceptado no se edita: si la decisión cambia, se escribe uno nuevo que lo
 | [0006](0006-monitor-virtual-windows.md) | Monitor virtual en Windows: VDD externo ahora, IddCx propio después | Propuesta, validar con la PoC-1 |
 | [0007](0007-monitor-virtual-linux.md) | Monitor virtual en Linux: backends por compositor con EVDI de respaldo | Propuesta, validar con la PoC-7 |
 | [0008](0008-audio.md) | Audio del sistema con Opus en Rust puro, opcional y negociado | Aceptada |
+| [0009](0009-varios-monitores.md) | Varios monitores por sesión como sesiones paralelas | Aceptada |

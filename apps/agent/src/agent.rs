@@ -24,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
+use tracing::Instrument;
 
 /// Validez del PIN mostrado.
 const PAIRING_LISTEN_TIMEOUT: Duration = Duration::from_secs(120);
@@ -127,7 +128,7 @@ impl Agent {
             receiver: tokio::sync::Mutex::new(None),
             discovery: Mutex::new(DiscoveryState::default()),
         });
-        agent.announce(0, None);
+        agent.announce(0, None, 1);
         Ok(agent)
     }
 
@@ -172,7 +173,7 @@ impl Agent {
 
     /// Anuncia este equipo por mDNS con su puerto de sesión (si el visor está
     /// activo) y de emparejamiento (si se muestra un PIN).
-    fn announce(&self, session_port: u16, pairing_port: Option<u16>) {
+    fn announce(&self, session_port: u16, pairing_port: Option<u16>, screens: u8) {
         let Some(m) = &self.mdns else { return };
         let a = Announcement {
             device_id: self.identity.fingerprint().device_id(),
@@ -181,6 +182,7 @@ impl Agent {
             protocol_major: PROTOCOL_VERSION.major,
             session_port,
             pairing_port,
+            screens,
         };
         match m.lock() {
             Ok(mut d) => {
@@ -194,14 +196,14 @@ impl Agent {
 
     async fn refresh_announcement(&self) {
         let pairing_port = self.pairing.lock().await.as_ref().map(|p| p.port);
-        let session_port = self
+        let (session_port, screens) = self
             .receiver
             .lock()
             .await
             .as_ref()
-            .map(|r| r.info.port)
-            .unwrap_or(0);
-        self.announce(session_port, pairing_port);
+            .map(|r| (r.info.port, r.info.screens.max(1)))
+            .unwrap_or((0, 1));
+        self.announce(session_port, pairing_port, screens);
     }
 
     fn trust(&self) -> Result<TrustStore, IpcError> {
@@ -265,6 +267,7 @@ impl Agent {
                 clipboard,
                 accept_input,
                 audio,
+                monitors,
             } => {
                 self.start_stream(
                     &addr,
@@ -276,6 +279,7 @@ impl Agent {
                     clipboard,
                     accept_input,
                     audio,
+                    monitors,
                 )
                 .await
             }
@@ -285,8 +289,9 @@ impl Agent {
                 fullscreen,
                 clipboard,
                 audio,
+                screens,
             } => {
-                self.start_receiver(port, fullscreen, clipboard, audio)
+                self.start_receiver(port, fullscreen, clipboard, audio, screens)
                     .await
             }
             Request::StopReceiver => self.stop_receiver().await,
@@ -382,7 +387,7 @@ impl Agent {
             return;
         };
         match self
-            .start_receiver(r.port, r.fullscreen, r.clipboard, r.audio)
+            .start_receiver(r.port, r.fullscreen, r.clipboard, r.audio, r.screens)
             .await
         {
             Ok(_) => tracing::info!(port = r.port, "recepción automática al arrancar"),
@@ -582,6 +587,7 @@ impl Agent {
             session_port: p.session_port,
             pairing_port: p.pairing_port,
             paired,
+            screens: p.screens,
         }
     }
 
@@ -647,6 +653,7 @@ impl Agent {
         clipboard: bool,
         accept_input: Option<bool>,
         audio: bool,
+        monitors: u8,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -724,6 +731,15 @@ impl Agent {
             StreamModeInfo::Extend => cs_core::StreamMode::Extend,
             StreamModeInfo::Duplicate => cs_core::StreamMode::Duplicate,
         };
+        let monitors = cs_pipeline::multi::check_monitors(monitors, cfg.mode)
+            .map_err(|e| err(ErrorCode::BadRequest, e))?;
+        if cs_pipeline::multi::monitor_addr(addr, monitors - 1).is_none() {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "El puerto del receptor es demasiado alto para tantos monitores",
+            ));
+        }
+        displays::check_virtual_count(monitors, cfg.mode).await?;
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
         cfg.clipboard = clipboard;
@@ -749,71 +765,64 @@ impl Agent {
                 cfg.pacing = cs_transport::PacingMode::Spread { fraction: 0.70 };
             }
         }
-        // Linux: diálogo del sistema para elegir la pantalla ANTES de conectar
-        // (el receptor solo espera 10 s al inicio de la sesión). En Windows no
-        // hace nada. Si falla la conexión, soltar `source` libera la captura.
-        let source = cs_pipeline::prepare_source(&cfg)
-            .await
-            .map_err(|e| failed(format!("No se pudo preparar la captura: {e:#}")))?;
-        let bind: SocketAddr = if addr.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
+        // Un monitor = una sesión independiente hacia el puerto base + i
+        // (ADR-0009). Se preparan y conectan todos antes de arrancar ninguno:
+        // si falla uno, se sueltan los anteriores y no queda nada a medias.
+        let mut parts = Vec::with_capacity(usize::from(monitors));
+        for i in 0..monitors {
+            let addr_i = cs_pipeline::multi::monitor_addr(addr, i).expect("comprobado arriba");
+            let mut cfg_i = cs_pipeline::multi::monitor_config(&cfg, i);
+            let label = |e: IpcError| {
+                if monitors > 1 {
+                    IpcError::new(e.code, format!("Monitor {}: {}", i + 1, e.message))
+                } else {
+                    e
+                }
+            };
+            // Linux: diálogo del sistema para elegir la pantalla ANTES de
+            // conectar (el receptor solo espera 10 s al inicio de la sesión).
+            // En Windows no hace nada. Si falla la conexión, soltar `source`
+            // libera la captura.
+            let source = cs_pipeline::prepare_source(&cfg_i)
+                .await
+                .map_err(|e| label(failed(format!("No se pudo preparar la captura: {e:#}"))))?;
+            let (endpoint, conn) = connect_receiver(&self.identity, addr_i, &peer_record)
+                .await
+                .map_err(label)?;
+            cfg_i.reconnect = Some(cs_pipeline::ReconnectConfig {
+                endpoint: endpoint.clone(),
+                addr: addr_i,
+                peer: peer_record.fingerprint,
+                grace: cs_pipeline::DEFAULT_RECONNECT_GRACE,
+            });
+            parts.push((cfg_i, source, endpoint, conn));
         }
-        .parse()
-        .expect("literal válido");
-        let endpoint = Endpoint::client(bind, self.identity.clone()).map_err(failed)?;
-        let conn = match tokio::time::timeout(
-            STREAM_CONNECT_TIMEOUT,
-            endpoint.connect(addr, PeerPolicy::Exactly(peer_record.fingerprint), ALPN),
-        )
-        .await
-        {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => {
-                endpoint.close();
-                return Err(failed(format!(
-                    "No se pudo conectar con {addr}: {e}. Comprueba que el otro equipo esté en «Recibir pantalla» y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)."
-                )));
-            }
-            Err(_) => {
-                endpoint.close();
-                return Err(err(
-                    ErrorCode::Timeout,
-                    format!(
-                        "Tiempo agotado al conectar con {addr}. Comprueba que el otro equipo esté en «Recibir pantalla» (o crossscreen-viewer --listen) y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)."
-                    ),
-                ));
-            }
-        };
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let first = &parts[0].3;
         let session = StreamSessionInfo {
             peer_name: peer_record.name.clone(),
             peer_fingerprint: peer_record.fingerprint.to_string(),
             peer_fingerprint_short: peer_record.fingerprint.short(),
-            remote_addr: conn.remote_addr().to_string(),
+            remote_addr: first.remote_addr().to_string(),
             mode,
             mode_override,
             bitrate_kbps,
             profile,
-            initial_rtt_us: conn.rtt().as_micros() as u64,
+            initial_rtt_us: first.rtt().as_micros() as u64,
             started_at,
+            monitors,
         };
-        cfg.reconnect = Some(cs_pipeline::ReconnectConfig {
-            endpoint: endpoint.clone(),
-            addr,
-            peer: peer_record.fingerprint,
-            grace: cs_pipeline::DEFAULT_RECONNECT_GRACE,
-        });
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         {
             let mut st = self.stream.lock().await;
             if st.active.is_some() {
-                conn.close(b"busy");
-                endpoint.close();
+                for (_, _, endpoint, conn) in parts {
+                    conn.close(b"busy");
+                    endpoint.close();
+                }
                 return Err(err(ErrorCode::Busy, "Ya hay una transmisión en curso"));
             }
             st.active = Some(ActiveStream {
@@ -825,31 +834,58 @@ impl Agent {
             peer = %session.peer_fingerprint_short,
             addr = %session.remote_addr,
             mode = ?session.mode,
+            monitors,
             "transmisión iniciada"
         );
         self.emit(Event::StreamStarted {
             session: session.clone(),
         });
+        // Cada monitor en su tarea; el grupo termina cuando terminan todos.
+        let mut tasks = Vec::with_capacity(parts.len());
+        for (i, (cfg_i, source, endpoint, conn)) in parts.into_iter().enumerate() {
+            let stop = stop_rx.clone();
+            let mut sess_i = session.clone();
+            sess_i.remote_addr = conn.remote_addr().to_string();
+            let span = tracing::info_span!("monitor", n = i + 1);
+            tasks.push(tokio::spawn(
+                async move {
+                    let res = cs_pipeline::run_sender(conn, cfg_i, source, stop).await;
+                    endpoint.close();
+                    let report = build_stream_report(&sess_i, res);
+                    if let Some(e) = &report.error {
+                        tracing::warn!(
+                            peer = %sess_i.peer_fingerprint_short,
+                            error = %e,
+                            "transmisión terminada con error"
+                        );
+                    } else {
+                        tracing::info!(
+                            peer = %sess_i.peer_fingerprint_short,
+                            reason = %report.end_reason,
+                            frames = report.frames_sent,
+                            "transmisión terminada"
+                        );
+                    }
+                    report
+                }
+                .instrument(span),
+            ));
+        }
         let agent = self.clone();
         let sess_for_task = session.clone();
         tokio::spawn(async move {
-            let res = cs_pipeline::run_sender(conn, cfg, source, stop_rx).await;
-            endpoint.close();
-            let report = Box::new(build_stream_report(&sess_for_task, res));
-            if let Some(e) = &report.error {
-                tracing::warn!(
-                    peer = %sess_for_task.peer_fingerprint_short,
-                    error = %e,
-                    "transmisión terminada con error"
-                );
-            } else {
-                tracing::info!(
-                    peer = %sess_for_task.peer_fingerprint_short,
-                    reason = %report.end_reason,
-                    frames = report.frames_sent,
-                    "transmisión terminada"
-                );
+            let mut reports = Vec::with_capacity(tasks.len());
+            for t in tasks {
+                reports.push(match t.await {
+                    Ok(r) => r,
+                    Err(e) => build_stream_report(
+                        &sess_for_task,
+                        Err(anyhow::anyhow!("tarea del monitor: {e}")),
+                    ),
+                });
             }
+            let mut report = Box::new(reports.remove(0));
+            report.other_monitors = reports;
             {
                 let mut st = agent.stream.lock().await;
                 st.active = None;
@@ -904,11 +940,28 @@ impl Agent {
         fullscreen: bool,
         clipboard: bool,
         audio: bool,
+        screens: u8,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
                 ErrorCode::Unsupported,
                 "El visor receptor no está disponible en esta plataforma",
+            ));
+        }
+        let screens = screens.max(1);
+        if screens > cs_pipeline::multi::MAX_MONITORS {
+            return Err(err(
+                ErrorCode::BadRequest,
+                format!(
+                    "Como máximo {} pantallas a la vez",
+                    cs_pipeline::multi::MAX_MONITORS
+                ),
+            ));
+        }
+        if port.checked_add(u16::from(screens) - 1).is_none() {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "El puerto es demasiado alto para tantas pantallas",
             ));
         }
         if port == 0 {
@@ -938,34 +991,45 @@ impl Agent {
                 "No se encontró crossscreen-viewer junto al agente. Compílalo o descárgalo en la misma carpeta.",
             )
         })?;
+        // Un visor por pantalla, en `port + i` (ADR-0009). Con varias, el
+        // visor `i` va al monitor físico `i`. El portapapeles y el audio, que
+        // son del equipo y no de la pantalla, solo los lleva el primero.
         let listen_addr = format!("0.0.0.0:{port}");
-        let mut cmd = tokio::process::Command::new(&viewer_path);
-        cmd.arg("--listen")
-            .arg(&listen_addr)
-            .arg("--data-dir")
-            .arg(&self.dir)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        if fullscreen {
-            cmd.arg("--fullscreen");
+        let mut children = Vec::with_capacity(usize::from(screens));
+        for i in 0..screens {
+            let mut cmd = tokio::process::Command::new(&viewer_path);
+            cmd.arg("--listen")
+                .arg(format!("0.0.0.0:{}", port + u16::from(i)))
+                .arg("--data-dir")
+                .arg(&self.dir)
+                .arg("--no-announce")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            if fullscreen {
+                cmd.arg("--fullscreen");
+            }
+            if screens > 1 {
+                cmd.arg("--monitor").arg(i.to_string());
+            }
+            if audio && i == 0 {
+                cmd.arg("--audio");
+            }
+            if clipboard && i == 0 {
+                cmd.arg("--clipboard");
+            }
+            #[cfg(windows)]
+            {
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            // Si falla uno, soltar `children` mata los anteriores (kill_on_drop).
+            children.push(cmd.spawn().map_err(|e| {
+                failed(format!("No se pudo lanzar {}: {e}", viewer_path.display()))
+            })?);
         }
-        if audio {
-            cmd.arg("--audio");
-        }
-        if clipboard {
-            cmd.arg("--clipboard");
-        }
-        #[cfg(windows)]
-        {
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| failed(format!("No se pudo lanzar {}: {e}", viewer_path.display())))?;
-        let pid = child.id().unwrap_or(0);
+        let pid = children[0].id().unwrap_or(0);
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -976,6 +1040,7 @@ impl Agent {
             fullscreen,
             pid,
             started_at,
+            screens,
         };
         let (stop_tx, stop_rx) = oneshot::channel();
         *slot = Some(ActiveReceiver {
@@ -984,40 +1049,30 @@ impl Agent {
         });
         drop(slot);
         self.refresh_announcement().await;
-        tracing::info!(port, fullscreen, pid, "visor receptor iniciado");
+        tracing::info!(port, fullscreen, pid, screens, "visor receptor iniciado");
         self.emit(Event::ReceiverStarted {
             receiver: info.clone(),
         });
 
         let agent = self.clone();
         tokio::spawn(async move {
-            let mut stderr = child.stderr.take();
-            let msg = tokio::select! {
-                status = child.wait() => {
-                    match status {
-                        Ok(s) if s.success() => None,
-                        Ok(s) => {
-                            let mut err_txt = String::new();
-                            if let Some(mut r) = stderr.take() {
-                                use tokio::io::AsyncReadExt;
-                                let _ = r.read_to_string(&mut err_txt).await;
-                            }
-                            let trimmed = err_txt.trim();
-                            if trimmed.is_empty() {
-                                Some(format!("El visor terminó ({s})"))
-                            } else {
-                                Some(trimmed.lines().last().unwrap_or(trimmed).to_owned())
-                            }
-                        }
-                        Err(e) => Some(format!("Error esperando al visor: {e}")),
-                    }
-                }
-                _ = stop_rx => {
-                    let _ = child.kill().await;
-                    let _ = child.wait().await;
-                    None
-                }
+            // Cuando se cierra un visor (o se pide parar) se cierran todos.
+            let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
+            let mut set = tokio::task::JoinSet::new();
+            for child in children {
+                set.spawn(watch_viewer(child, kill_rx.clone()));
+            }
+            let first = tokio::select! {
+                r = set.join_next() => r.and_then(|r| r.ok()).flatten(),
+                _ = stop_rx => None,
             };
+            let _ = kill_tx.send(true);
+            let mut msg = first;
+            while let Some(r) = set.join_next().await {
+                if msg.is_none() {
+                    msg = r.ok().flatten();
+                }
+            }
             *agent.receiver.lock().await = None;
             agent.refresh_announcement().await;
             tracing::info!(?msg, "visor receptor detenido");
@@ -1041,6 +1096,79 @@ impl Agent {
         };
         let _ = stop.send(());
         Ok(Response::Ok)
+    }
+}
+
+/// Conecta con un visor receptor (huella fijada) con tiempo máximo.
+async fn connect_receiver(
+    identity: &Identity,
+    addr: SocketAddr,
+    peer: &PeerRecord,
+) -> Result<(Endpoint, cs_transport::Connection), IpcError> {
+    let bind: SocketAddr = if addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    }
+    .parse()
+    .expect("literal válido");
+    let endpoint = Endpoint::client(bind, identity.clone()).map_err(failed)?;
+    match tokio::time::timeout(
+        STREAM_CONNECT_TIMEOUT,
+        endpoint.connect(addr, PeerPolicy::Exactly(peer.fingerprint), ALPN),
+    )
+    .await
+    {
+        Ok(Ok(c)) => Ok((endpoint, c)),
+        Ok(Err(e)) => {
+            endpoint.close();
+            Err(failed(format!(
+                "No se pudo conectar con {addr}: {e}. Comprueba que el otro equipo esté en «Recibir pantalla» y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)."
+            )))
+        }
+        Err(_) => {
+            endpoint.close();
+            Err(err(
+                ErrorCode::Timeout,
+                format!(
+                    "Tiempo agotado al conectar con {addr}. Comprueba que el otro equipo esté en «Recibir pantalla» (o crossscreen-viewer --listen) y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)."
+                ),
+            ))
+        }
+    }
+}
+
+/// Espera a que termine un visor (o lo mata si `kill` pasa a `true`).
+/// Devuelve el error con que terminó, si lo hubo.
+async fn watch_viewer(
+    mut child: tokio::process::Child,
+    mut kill: tokio::sync::watch::Receiver<bool>,
+) -> Option<String> {
+    let mut stderr = child.stderr.take();
+    tokio::select! {
+        status = child.wait() => match status {
+            Ok(s) if s.success() => None,
+            Ok(s) => {
+                let mut err_txt = String::new();
+                if let Some(mut r) = stderr.take() {
+                    use tokio::io::AsyncReadExt;
+                    let _ = r.read_to_string(&mut err_txt).await;
+                }
+                let trimmed = err_txt.trim();
+                if trimmed.is_empty() {
+                    Some(format!("El visor terminó ({s})"))
+                } else {
+                    Some(trimmed.lines().last().unwrap_or(trimmed).to_owned())
+                }
+            }
+            Err(e) => Some(format!("Error esperando al visor: {e}")),
+        },
+        // El `Ref` de `wait_for` no es `Send`: se suelta dentro del bloque.
+        _ = async { let _ = kill.wait_for(|k| *k).await; } => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            None
+        }
     }
 }
 
@@ -1134,6 +1262,7 @@ fn build_stream_report(
                 receiver_jitter_us: rs.map(|x| x.jitter_us),
                 receiver_decode_us: rs.map(|x| x.decode_time_us),
                 error: w.fatal.clone(),
+                other_monitors: Vec::new(),
             }
         }
         Err(e) => StreamReportInfo {
@@ -1165,6 +1294,7 @@ fn build_stream_report(
             receiver_jitter_us: None,
             receiver_decode_us: None,
             error: Some(format!("{e:#}")),
+            other_monitors: Vec::new(),
         },
     }
 }
@@ -1248,6 +1378,36 @@ mod displays {
             })
         })
         .await
+    }
+
+    /// Windows, extender con varios monitores: el driver debe tener al menos
+    /// tantos monitores virtuales (se configura en su XML, con permisos de
+    /// administrador). Comprobarlo antes de conectar da un error claro.
+    pub async fn check_virtual_count(
+        monitors: u8,
+        mode: cs_core::StreamMode,
+    ) -> Result<(), IpcError> {
+        if monitors <= 1 || mode != cs_core::StreamMode::Extend || !cfg!(windows) {
+            return Ok(());
+        }
+        let have = blocking(|| {
+            Ok(Displays::new()
+                .targets()
+                .map_err(map_err)?
+                .iter()
+                .filter(|t| t.is_virtual)
+                .count())
+        })
+        .await?;
+        if have < usize::from(monitors) {
+            return Err(err(
+                ErrorCode::BadRequest,
+                format!(
+                    "El driver de monitor virtual tiene {have} monitor(es) y se piden {monitors}. Aumenta el número de monitores del driver (Virtual Display Driver, opción «monitors/count») y vuelve a intentarlo."
+                ),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn hide() -> Result<Response, IpcError> {
