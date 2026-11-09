@@ -5,7 +5,9 @@
 //! se retrasa.
 
 use pipewire as pw;
-use pw::{properties::properties, spa};
+use pw::prelude::*;
+use pw::{properties, spa};
+use std::os::fd::AsRawFd;
 use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -106,9 +108,9 @@ fn run_i420(
     stop_rx: pw::channel::Receiver<()>,
 ) -> Result<(), PipeWireCaptureError> {
     pw::init();
-    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
-    let context = pw::context::Context::new(&main_loop)?;
-    let core = context.connect_fd(fd, None)?;
+    let main_loop = pw::MainLoop::new()?;
+    let context = pw::Context::new(&main_loop)?;
+    let core = context.connect_fd(fd.as_raw_fd(), None)?;
     let stream = pw::stream::Stream::new(
         &core,
         "crossscreen-screen-capture",
@@ -265,7 +267,7 @@ fn run_i420(
     .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?
     .0
     .into_inner();
-    let mut params = [values.as_ptr() as *const pipewire_sys::spa_pod];
+    let mut params = [values.as_ptr() as *const libspa_sys::spa_pod];
     stream.connect(
         spa::Direction::Input,
         Some(node_id),
@@ -275,7 +277,7 @@ fn run_i420(
         &mut params,
     )?;
     let stop_loop = main_loop.clone();
-    let _stop_listener = stop_rx.attach(main_loop.loop_(), move |_| stop_loop.quit());
+    let _stop_listener = stop_rx.attach(main_loop.as_ref(), move |_| stop_loop.quit());
     let _stream = stream;
     let _listener = _listener;
     main_loop.run();
