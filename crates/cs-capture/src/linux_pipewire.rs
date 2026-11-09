@@ -228,6 +228,7 @@ fn run_i420(
             Choice,
             Enum,
             Id,
+            pw::spa::param::video::VideoFormat::I420,
             pw::spa::param::video::VideoFormat::I420
         ),
         pw::spa::pod::property!(
