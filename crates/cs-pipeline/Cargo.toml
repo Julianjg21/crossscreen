@@ -30,6 +30,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
 ] }
 
+[target.'cfg(not(windows))'.dependencies]
+cs-capture = { path = "../cs-capture", features = ["linux-pipewire"] }
+
 [dev-dependencies]
 cs-security.workspace = true
 clap.workspace = true

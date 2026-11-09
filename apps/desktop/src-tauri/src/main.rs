@@ -12,7 +12,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 #[derive(Default)]
@@ -144,14 +144,14 @@ async fn replace_stale_agent(
 async fn agent_connect(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
     match try_connect(&app, &conn).await {
         Ok(info) => {
-            if info.agent_version != cs_ipc::agent_version_string() && find_agent().is_some() {
+            if info.agent_version != cs_ipc::agent_version_string() && find_agent(&app).is_some() {
                 replace_stale_agent(&app, &conn, &info.agent_version).await
             } else {
                 Ok(info)
             }
         }
         Err(first_err) => {
-            if find_agent().is_some() {
+            if find_agent(&app).is_some() {
                 spawn_and_connect(&app, &conn).await
             } else {
                 Err(first_err)
@@ -179,11 +179,14 @@ async fn agent_request(
 /// carpetas superiores permitiría ejecutar un binario plantado, p. ej. en
 /// `Descargas\target\release\` si el `.zip` se descomprimió en `Descargas`.
 /// Los directorios `target*` del repositorio solo se consultan en desarrollo.
-fn find_agent() -> Option<PathBuf> {
+fn find_agent(app: &AppHandle) -> Option<PathBuf> {
     let exe_name = format!("crossscreen-agent{}", std::env::consts::EXE_SUFFIX);
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     #[allow(unused_mut)] // solo se amplía en compilaciones de desarrollo
     let mut candidates = vec![dir.join(&exe_name)];
+    if let Ok(resources) = app.path().resource_dir() {
+        candidates.push(resources.join(&exe_name));
+    }
     #[cfg(debug_assertions)]
     candidates.extend(dev_agent_candidates(&dir, &exe_name));
     candidates.into_iter().find(|p| p.is_file())
@@ -209,7 +212,7 @@ fn dev_agent_candidates(dir: &std::path::Path, exe_name: &str) -> Vec<PathBuf> {
 }
 
 async fn spawn_and_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInfo, CmdError> {
-    let path = find_agent().ok_or_else(|| {
+    let path = find_agent(app).ok_or_else(|| {
         CmdError::unavailable(
             "No se encontró crossscreen-agent junto a la aplicación. Compílalo con `cargo build -p crossscreen-agent` o inícialo a mano.",
         )

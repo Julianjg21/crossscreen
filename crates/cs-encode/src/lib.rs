@@ -5,6 +5,8 @@
 //! - `mf` (solo Windows): codificador por hardware con Media Foundation
 //!   (MFT H.264 asíncrono del fabricante), entrada `ID3D11Texture2D` BGRA y
 //!   conversión BGRA→NV12 en la GPU con el Video Processor de D3D11.
+//! - `openh264_backend` (Linux): codificador por software con el binario
+//!   oficial de Cisco cargado en tiempo de ejecución y entrada I420.
 //!
 //! El contrato común es el *trait* [`VideoEncoder`]: un frame entra y salen
 //! cero o más [`EncodedUnit`] en Annex-B. Con el modo de baja latencia la
@@ -15,6 +17,8 @@ pub mod h264;
 
 #[cfg(windows)]
 pub mod mf;
+#[cfg(not(windows))]
+pub mod openh264_backend;
 
 use std::time::Duration;
 

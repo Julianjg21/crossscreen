@@ -10,9 +10,25 @@ Tu PC con Windows (PC-A) **extiende su escritorio** y el equipo Linux (PC-B) lo 
 | Cursor de la fuente dibujado encima del vídeo | ✅ (aparece cuando llega su primera forma) |
 | Decodificación por hardware (VAAPI) | ❌ pendiente: por ahora decodifica la CPU |
 | Portapapeles en Linux | ❌ pendiente: el visor avisa y sigue sin él |
-| Linux como fuente (extender el escritorio de Linux) | ❌ pendiente (fase siguiente) |
+| Linux como fuente (duplicar el escritorio hacia Windows) | 🟡 experimental: GNOME Wayland con Portal/PipeWire; modo `extend` pendiente |
 
-Probado en Ubuntu 24.04 dentro de WSL2, que solo tiene Vulkan por software (`llvmpipe`): funciona (0 frames perdidos), pero ahí la CPU no da abasto y la latencia es alta. En un Ubuntu real con GPU debería ir bastante mejor; tus resultados lo confirmarán.
+## Linux como fuente experimental
+
+La fuente Linux actual solo duplica el monitor elegido en el diálogo de GNOME.
+El receptor Windows debe estar escuchando y ambos equipos deben estar
+emparejados. En Ubuntu GNOME con PipeWire instalado:
+
+```bash
+crossscreen stream <IP_DEL_WINDOWS>:47810 --peer <HUELLA_DEL_WINDOWS> --mode duplicate
+```
+
+Al iniciar se debe aceptar la autorización de captura del portal. El binario
+Linux necesita también `libopenh264-2.6.0-linux64.8.so`, instalado mediante
+`fetch-openh264.sh` como en el modo receptor. Esta ruta es experimental: todavía
+no se ha validado en hardware real desde este repositorio y no incluye `extend`,
+portapapeles ni inyección de entrada Linux.
+
+Validado también en un Ubuntu real con el flujo Windows → Ubuntu completo. La prueba confirma que el receptor funciona fuera de WSL2; las métricas detalladas de GPU, sesión gráfica y latencia quedan pendientes de documentar por separado.
 
 ## 1. Requisitos (Ubuntu 22.04 o 24.04, x86_64)
 Ubuntu Desktop ya trae casi todo. Si falta algo:

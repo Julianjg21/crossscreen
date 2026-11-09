@@ -46,16 +46,18 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Dependencias del sistema (ventana X11/Wayland)
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev
-      # Captura, codificación y panel aún son solo de Windows; el receptor
-      # (visor + OpenH264 + wgpu) y la CLI ya compilan en Linux.
+      - name: Dependencias del sistema (ventana X11/Wayland y PipeWire)
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libpipewire-0.3-dev
+      # El emisor Linux usa Portal/PipeWire y OpenH264 por software; el modo
+      # extender y la entrada/portapapeles siguen siendo trabajo posterior.
       - name: Clippy y tests
         run: |
-          PKGS="-p cs-core -p cs-protocol -p cs-security -p cs-transport -p cs-discovery -p cs-session -p cs-ipc"
+          PKGS="-p cs-core -p cs-protocol -p cs-security -p cs-transport -p cs-discovery -p cs-session -p cs-ipc -p cs-capture -p cs-encode -p cs-pipeline"
           VIEWER="-p cs-decode -p cs-render -p crossscreen-viewer -p crossscreen-cli"
           cargo clippy $PKGS $VIEWER --all-targets -- -D warnings
           cargo test $PKGS
+          cargo clippy -p cs-capture --features linux-pipewire --all-targets -- -D warnings
+          cargo clippy -p cs-pipeline --all-targets -- -D warnings
           cargo test -p cs-render
 
   licenses:

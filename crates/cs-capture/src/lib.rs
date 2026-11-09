@@ -9,12 +9,17 @@
 //! - Windows: DXGI Desktop Duplication ([`windows_dxgi::DxgiCapture`]), con
 //!   textura `ID3D11Texture2D` y el `ID3D11Device` expuesto para que el
 //!   codificador trabaje sobre el mismo dispositivo y adaptador.
-//! - Linux/macOS: pendientes (PipeWire / ScreenCaptureKit).
+//! - Linux: captura experimental mediante XDG Portal/PipeWire (monitor duplicado).
+//! - macOS: pendiente (ScreenCaptureKit).
 
 pub mod bmp;
 pub mod cursor;
 pub mod stats;
 
+#[cfg(all(not(windows), feature = "linux-pipewire"))]
+pub mod linux_pipewire;
+#[cfg(not(windows))]
+pub mod linux_portal;
 #[cfg(windows)]
 pub mod windows_dxgi;
 

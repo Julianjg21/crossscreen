@@ -116,6 +116,12 @@ export default function Stream({
   }, [initialPeer, initialAddr, onConsumeInitial]);
 
   useEffect(() => {
+    if (status.platform === "linux") {
+      setMode("duplicate");
+    }
+  }, [status.platform]);
+
+  useEffect(() => {
     void loadState();
     let alive = true;
     const un = onAgentEvent((ev) => {
@@ -411,7 +417,9 @@ export default function Stream({
                 value={mode}
                 onChange={(e) => setMode(e.target.value as StreamModeInfo)}
               >
-                <option value="extend">Extender escritorio (monitor virtual)</option>
+                <option value="extend" disabled={status.platform === "linux"}>
+                  Extender escritorio (monitor virtual; solo Windows)
+                </option>
                 <option value="duplicate">Duplicar pantalla principal</option>
               </select>
 

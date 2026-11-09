@@ -17,6 +17,12 @@ ignore = [
     # paste (sin mantenimiento) llega vía wgpu-hal → metal, el backend de wgpu para
     # macOS/iOS: macro de compilación que no se compila para Windows ni Linux.
     { id = "RUSTSEC-2024-0436", reason = "macro de compilación de metal (wgpu, solo Apple); no se compila en plataformas soportadas" },
+    # ashpd 0.12 (Portal oficial para GNOME) depende de estos crates D-Bus.
+    # RustSec indica que no existe actualización segura dentro de la rama
+    # compatible; retirar la excepción cuando ashpd migre a zbus 6.
+    { id = "RUSTSEC-2026-0370", reason = "dependencia transitiva de ashpd para XDG Desktop Portal; sin actualización segura disponible" },
+    { id = "RUSTSEC-2026-0371", reason = "dependencia transitiva de ashpd para XDG Desktop Portal; sin actualización segura disponible" },
+    { id = "RUSTSEC-2026-0372", reason = "dependencia transitiva de ashpd para XDG Desktop Portal; sin actualización segura disponible" },
 ]
 
 [licenses]

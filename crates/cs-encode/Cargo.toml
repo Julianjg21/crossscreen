@@ -1,6 +1,6 @@
 [package]
 name = "cs-encode"
-description = "Codificación H.264 por hardware de CrossScreen (Media Foundation + D3D11 en Windows)"
+description = "Codificación H.264 de CrossScreen (Media Foundation en Windows y OpenH264 en Linux)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,6 +23,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
     "Win32_Security",
 ] }
+
+[target.'cfg(not(windows))'.dependencies]
+openh264 = { version = "0.9", default-features = false, features = ["libloading"] }
 
 [dev-dependencies]
 anyhow.workspace = true

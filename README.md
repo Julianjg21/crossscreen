@@ -4,7 +4,7 @@ Plataforma open source para usar un segundo computador como **monitor adicional 
 
 > Estado: **alfa.** Windows → Windows funciona entre dos equipos reales (monitor extendido, ratón y teclado remotos, portapapeles, panel de escritorio).
 >
-> **Linux como pantalla (Windows → Linux)** ya funciona en Ubuntu (probado en WSL2; falta probarlo en un Ubuntu real con GPU): guía en [`docs/11-receptor-linux.md`](docs/11-receptor-linux.md). Linux como fuente aún no está soportado.
+> **Linux como pantalla (Windows → Linux)** ya funciona en Ubuntu real: guía en [`docs/11-receptor-linux.md`](docs/11-receptor-linux.md). Linux como fuente ya tiene un emisor experimental para duplicar un monitor GNOME mediante Portal/PipeWire; aún falta validarlo en hardware real.
 
 ## Qué funciona hoy
 
@@ -25,8 +25,9 @@ Plataforma open source para usar un segundo computador como **monitor adicional 
 | `cs-ipc` + `crossscreen-agent` + panel Tauri (`apps/desktop`) | ✅ Windows; ⚠️ IPC de Linux compila pero no se ha ejecutado | Comunicación real agente ↔ panel; canal restringido al usuario actual |
 | `crossscreen-helper` (Windows, admin bajo demanda): instala y desinstala Virtual-Display-Driver verificando el hash de cada archivo, y reinicia el dispositivo | ✅ | Instalado y recuperado un código 43 en este equipo ([PoC-1](docs/poc-results/poc-01-vdd.md)) |
 | `cs-display` (Windows): mostrar y retirar el monitor virtual con CCD de rutas explícitas y fijar el modo, sin privilegios | ✅ | 100/100 ciclos sin fallos; `crossscreen display show\|hide\|list\|cycle` |
-| Linux como receptor: `crossscreen-viewer --listen` con OpenH264 (binario de Cisco, por CPU) y wgpu (Vulkan/GL), X11 y Wayland | ✅ en Ubuntu 24.04 (WSL2); ⚠️ falta un Ubuntu real con GPU; VAAPI y portapapeles pendientes | Windows → WSL: 140/140 frames, 0 perdidos; decodificación 1366×768 p50 10,9 ms |
-| Linux: monitor virtual (Linux como fuente) | ❌ no iniciado | PoC-7 |
+| Linux como receptor: `crossscreen-viewer --listen` con OpenH264 (binario de Cisco, por CPU) y wgpu (Vulkan/GL), X11 y Wayland | ✅ validado en Ubuntu real; VAAPI y portapapeles pendientes | Prueba Windows → Ubuntu completada; métricas detalladas pendientes de documentar |
+| Instalador visual Linux | 🟡 experimental | AppImage y `.deb`, incluye panel Tauri y agente; requiere Ubuntu GNOME y validación fuera de CI |
+| Linux como fuente: duplicar el escritorio y transmitir a Windows | 🟡 experimental | XDG Desktop Portal/PipeWire + OpenH264; requiere Ubuntu GNOME y validación fuera de CI |
 | **Cadena completa (MVP F2, Windows):** `crossscreen stream` (emisor: monitor virtual → captura → codificación → QUIC) y `crossscreen-viewer --listen` (receptor: QUIC → decodificación → presentación con cursor real) | ✅ validado entre dos equipos por Wi-Fi | Captura → `Present()` en el mismo equipo: p50 29 ms / p95 32 ms; 0 frames perdidos ([emisor](docs/poc-results/mvp-f2-emisor.md), [receptor](docs/poc-results/mvp-f2-receptor.md)) |
 | Integración del streaming en el agente y el panel | ✅ Windows | Validado por el dueño con `v0.0.1-alpha.8` |
 

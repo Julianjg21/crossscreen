@@ -16,6 +16,8 @@ pub mod display_guard;
 pub mod stats;
 pub mod timing;
 
+#[cfg(not(windows))]
+mod linux;
 #[cfg(windows)]
 mod session;
 #[cfg(windows)]
@@ -139,9 +141,9 @@ pub async fn run_sender(
 /// Sin backend de captura/codificación fuera de Windows (todavía).
 #[cfg(not(windows))]
 pub async fn run_sender(
-    _conn: cs_transport::Connection,
-    _cfg: SenderConfig,
-    _shutdown: tokio::sync::watch::Receiver<bool>,
+    conn: cs_transport::Connection,
+    cfg: SenderConfig,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<SenderReport> {
-    anyhow::bail!("el emisor solo está implementado en Windows por ahora")
+    linux::run(conn, cfg, shutdown).await
 }

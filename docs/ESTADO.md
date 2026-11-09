@@ -5,7 +5,7 @@
 > - Al terminar tu sesión, actualiza "Trabajo en curso", "Próximos pasos" y añade una línea a la **Bitácora**: fecha, quién, qué se hizo y qué quedó a medias.
 > - Las reglas permanentes están en [`AGENTS.md`](../AGENTS.md).
 
-**Última actualización:** 2026-11-08 (coordinador). **Receptor Linux (Windows → Linux)** implementado y probado en WSL2; paquete `linux-x64.tar.gz` en la release. El proyecto continúa con un solo agente (Claude Code).
+**Última actualización:** 2026-11-08 (coordinador). **Receptor Linux (Windows → Linux)** implementado y validado en Ubuntu real y previamente en WSL2; paquete `linux-x64.tar.gz` en la release. El panel visual Linux ya está configurado para generar AppImage y `.deb`, incluyendo el agente Linux como recurso; el emisor Linux experimental conecta Portal/PipeWire, OpenH264 y QUIC para duplicación, pendiente de validación real.
 
 ## Resumen en una frase
 La cadena completa de Windows funciona de punta a punta (monitor virtual → captura → H.264 por hardware → QUIC cifrado con reconexión automática → decodificación → presentación con cursor + entrada remota de ratón y teclado), **validada y afinada sobre Wi-Fi real entre dos equipos (60 s a `1366×768@60`: pérdidas reducidas de 31 a 2 frames, peticiones `RequestKeyframe` de 104 a 1, cursor de 638 a 3 040 posiciones y `Captura→enviado` p50 18,1 / p95 25,6 / máx. 53,2 ms)** e integrada en `crossscreen-agent` y en el panel de escritorio Tauri (`Transmitir pantalla`).
@@ -17,7 +17,7 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
 | F1 PoC (Windows) | ✅ PoC-1, 2, 3 y 5; PoC-4 en loopback + pruebas reales Wi-Fi |
 | F2 MVP Windows → Windows | 🟡 Funciona en Wi-Fi real (`PC-A → PC-B`), integrado en agente + panel Tauri y con reconexión QUIC automática; falta prueba por cable y estabilidad de 2 h |
 | F3 Extender en Windows | ✅ VDD + CCD funcionando, integrado en agente y con ventana de gracia de 15 s ante cortes de red |
-| F4 Linux | 🟡 **Receptor** hecho (OpenH264 de Cisco + wgpu, X11/Wayland), probado en Ubuntu 24.04 sobre WSL2; falta Ubuntu GNOME real del dueño, VAAPI, portapapeles y Linux como fuente |
+| F4 Linux | 🟡 **Receptor** hecho (OpenH264 de Cisco + wgpu, X11/Wayland), validado en Ubuntu real y WSL2; emisor experimental en `duplicate`; faltan VAAPI, portapapeles y `extend` |
 | F5 Robustez y Wi-Fi | 🟡 FEC adaptativo + entrelazado, `DecodeThrough`, `KeyframeRequester` calmado y reconexión con ventana de gracia implementados |
 | F6 Entrada remota / KVM | 🟡 Protocolo `ControlMessage::Input`, crate `cs-input` (`SendInput` sobre escritorio virtual + liberación automática al desconectar) y captura en `crossscreen-viewer` integrados en Windows |
 
@@ -63,7 +63,7 @@ La cadena completa de Windows funciona de punta a punta (monitor virtual → cap
   - **Fluidez del cursor:** sondeo Win32 (`GetPhysicalCursorPos` + `GetCursorInfo`) a **125 Hz** independiente del codificador, retorno inmediato en `DxgiCapture::next_frame` ante eventos de puntero y deduplicación de `CursorShape`, subiendo de **638** posiciones (`10,6 Hz`) a **3 040** (`50,7 Hz`) y **846–1 122** repintados solo de cursor.
 
 ## Trabajo en curso (2026-11-08)
-**Receptor Linux, esperando la prueba del dueño en su Ubuntu GNOME real** (PC-A Windows → Ubuntu). Guía: `docs/11-receptor-linux.md` (va en el paquete como `RECEPTOR-LINUX.md`).
+**Receptor Linux validado por el dueño en Ubuntu real** (PC-A Windows → Ubuntu). Guía: `docs/11-receptor-linux.md` (va en el paquete como `RECEPTOR-LINUX.md`). No se han añadido métricas nuevas porque la prueba confirmada no incluyó un resumen numérico.
 
 Cómo está hecho:
 - `cs-decode` en no-Windows: crate `openh264` (feature `libloading`) que carga **el binario oficial de Cisco** `libopenh264-2.6.0-linux64.8.so` (lo descarga y verifica `scripts/fetch-openh264.sh`; no se redistribuye por la licencia de patentes). Busca en `CROSSSCREEN_OPENH264`, junto al ejecutable y en `~/.local/share/crossscreen/`. Frames I420 en CPU.
@@ -87,7 +87,7 @@ Pruebas en WSL2 (Ubuntu 24.04, `llvmpipe`, i5-1235U): decodificación sola 600/6
    - codificador más rápido (oneVPL/QSV directo; NVENC/AMF en otro hardware);
    - control de tasa dinámico (el MFT de Intel ignora el cambio de bitrate en caliente).
 6. Prueba de estabilidad de 2 h; suspensión/reanudación con el monitor extendido.
-7. **Linux (F4):** el dueño prueba el receptor en su Ubuntu GNOME (`v0.0.1-alpha.9`); después VAAPI (decodificación por hardware), portapapeles en Linux (X11/Wayland) y Linux como fuente (Mutter `RecordVirtual` + PipeWire, luego KWin/wlroots/EVDI).
+7. **Linux → Windows (F4b):** validar el emisor experimental de duplicación (Portal/PipeWire → OpenH264 → QUIC) en GNOME Wayland; después añadir entrada, portapapeles, VAAPI y el modo extender.
 
 ## Problemas conocidos y decisiones vigentes
 - **Versiones mezcladas:** solo puede haber un agente por usuario; un panel nuevo se conectaba a un agente viejo en marcha. Desde `alpha.8` el agente anuncia `versión+build` (`CROSSSCREEN_BUILD_ID`, lo fija `scripts/package-windows.ps1`) y el panel sustituye un agente de otra build (petición IPC `Shutdown`, rechazada si hay una sesión activa). Los mensajes de control desconocidos se ignoran en lugar de cortar la sesión, y cada lado avisa si el otro tiene una versión menor más antigua (protocolo 0.3).
@@ -121,4 +121,6 @@ Pruebas en WSL2 (Ubuntu 24.04, `llvmpipe`, i5-1235U): decodificación sola 600/6
 | 2026-11-08 | Coordinador | Revisión de seguridad de F7: portapapeles **opcional** (desactivado por defecto; `--clipboard` y casilla en el panel, llevado por `cs-ipc` hasta el visor); ranura "el último gana" en lugar de cola sin límite para textos remotos; `prime_unread` evita enviar lo copiado antes de conectar si la primera lectura falló. Release `v0.0.1-alpha.7`. 209 tests en verde. |
 | 2026-11-08 | Dueño + coordinador | **Bug real: la sesión se cerraba al mover el ratón en PC-B.** Causa: el panel `alpha.7` usó un agente viejo (anterior a F6) que seguía en marcha; el emisor no entendía `ControlMessage::Input` (`Serde Deserialization Error`) y cortaba. Arreglos: mensajes desconocidos ignorados sin perder la sincronía del canal, protocolo 0.3 con aviso de funciones ausentes, `BUILD_ID` en el agente y sustitución automática desde el panel (IPC 1.2 `Shutdown`). Release `v0.0.1-alpha.8`. |
 | 2026-11-08 | Dueño | **Validación con `alpha.8` entre PC-A y PC-B:** monitor extendido, ratón y teclado remotos, portapapeles en ambos sentidos y transmisión desde el panel funcionan correctamente. |
-| 2026-11-08 | Coordinador | **Receptor Linux (F4, Windows → Linux):** OpenH264 de Cisco cargado en tiempo de ejecución en `cs-decode`, renderizador `wgpu` en `cs-render`, capa `platform` en el visor, salto a IDR por retraso en cola, `fetch-openh264.sh`, `package-linux.sh`, guía `docs/11-receptor-linux.md` y job Linux en CI/Release. Probado en Ubuntu 24.04 sobre WSL2 (140/140 frames). Release `v0.0.1-alpha.9`. Falta la prueba en el Ubuntu GNOME real del dueño. |
+| 2026-11-08 | Coordinador | **Receptor Linux (F4, Windows → Linux):** OpenH264 de Cisco cargado en tiempo de ejecución en `cs-decode`, renderizador `wgpu` en `cs-render`, capa `platform` en el visor, salto a IDR por retraso en cola, `fetch-openh264.sh`, `package-linux.sh`, guía `docs/11-receptor-linux.md` y job Linux en CI/Release. Probado en Ubuntu 24.04 sobre WSL2 (140/140 frames) y validado por el dueño en Ubuntu real con el flujo Windows → Ubuntu. Release `v0.0.1-alpha.9`. |
+| 2026-11-08 | Copilot SDK en VS Code | Emisor Linux experimental: Portal/PipeWire entrega I420, OpenH264 produce Annex-B y `cs-pipeline` reutiliza handshake QUIC, FEC y pacing para `duplicate`. Compila en el workspace Windows; la validación nativa requiere Ubuntu con PipeWire de desarrollo y una prueba real contra Windows. |
+| 2026-11-08 | Coordinador | Validación del estado heredado: `cargo test --workspace` y `apps/desktop/npm.cmd run build` en verde. Actualizada la guía del panel para documentar la transmisión, recepción, perfiles de red y portapapeles opcional ya integrados. |

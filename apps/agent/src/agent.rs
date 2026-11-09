@@ -305,7 +305,7 @@ impl Agent {
             discovery_active,
             mdns_available: self.mdns.is_some(),
             displays_supported: cfg!(windows),
-            streaming_supported: cfg!(windows),
+            streaming_supported: cfg!(any(windows, target_os = "linux")),
             active_stream,
             last_stream,
             active_receiver,
@@ -549,10 +549,10 @@ impl Agent {
         profile: StreamProfileInfo,
         clipboard: bool,
     ) -> Result<Response, IpcError> {
-        if !cfg!(windows) {
+        if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
                 ErrorCode::Unsupported,
-                "El emisor de pantalla solo está disponible en Windows por ahora",
+                "El emisor de pantalla no está disponible en esta plataforma",
             ));
         }
         let addr: SocketAddr = addr.trim().parse().map_err(|_| {
@@ -793,10 +793,10 @@ impl Agent {
         fullscreen: bool,
         clipboard: bool,
     ) -> Result<Response, IpcError> {
-        if !cfg!(windows) {
+        if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
                 ErrorCode::Unsupported,
-                "El visor receptor solo está disponible en Windows por ahora",
+                "El visor receptor no está disponible en esta plataforma",
             ));
         }
         if port == 0 {

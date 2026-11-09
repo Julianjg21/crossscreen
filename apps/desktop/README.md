@@ -15,10 +15,16 @@ Solo funciones que ya funcionan de verdad; no hay datos simulados.
 | **Emparejar** | «Mostrar PIN» (abre un puerto 2 min y espera) o «Introducir PIN» (IP:puerto + PIN) con resultado y huella |
 | **Red local** | Equipos CrossScreen descubiertos por mDNS, en vivo; acceso directo a emparejar si muestran PIN |
 | **Monitor virtual** | Lista de pantallas y mostrar/retirar el monitor virtual a una resolución elegida. Solo Windows (requiere Virtual-Display-Driver instalado con `crossscreen-helper`); en otros sistemas aparece deshabilitado con la explicación |
-| Transmitir pantalla | Deshabilitado: «Próximamente» (todavía no existe captura ni streaming) |
+| **Transmitir pantalla** | Iniciar o detener la transmisión hacia un equipo emparejado, elegir extender/duplicar, resolución, frecuencia, bitrate y perfil de red; mostrar estadísticas reales de la sesión |
+| **Recibir pantalla** | Escuchar en un puerto UDP, elegir pantalla completa y activar opcionalmente el portapapeles |
 
 Si el agente no está en marcha, la UI muestra «Agente no iniciado» con un botón que lanza
 `crossscreen-agent` si lo encuentra junto al ejecutable de la UI (o en `../debug`, `../release`).
+
+La transmisión y la recepción desde el panel están disponibles en Windows. El equipo remoto debe
+estar emparejado y, para recibir, debe ejecutar también el visor compatible con su plataforma.
+El portapapeles permanece desactivado por defecto y solo se sincroniza al activar la casilla en
+ambos extremos.
 
 ## Requisitos
 
@@ -55,6 +61,23 @@ El ejecutable queda en `<target>/debug/crossscreen-desktop(.exe)`, junto a `cros
 Ojo: `cargo build -p crossscreen-desktop` a secas compila en modo desarrollo y la ventana intentará
 cargar `http://localhost:1420` (el servidor de Vite); para embeber `dist/` hace falta la feature
 `custom-protocol`, que `tauri build` activa automáticamente.
+
+## Instalador Linux
+
+El workflow de release genera un `.AppImage` y un paquete `.deb` para Linux
+x86_64. El panel incluye el agente y el visor Linux como recursos y puede iniciarlos desde
+la propia interfaz. La captura solicita autorización mediante el portal de
+escritorio GNOME; el modo `extend` todavía no está disponible en Linux.
+
+Para generar los instaladores localmente desde Ubuntu:
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libpipewire-0.3-dev pkg-config
+./scripts/package-linux-desktop.sh
+```
+
+El instalador no redistribuye OpenH264. Después de instalar, ejecuta el
+`fetch-openh264.sh` incluido para descargar el binario oficial de Cisco.
 
 ## Seguridad de la IPC
 

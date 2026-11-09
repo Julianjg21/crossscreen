@@ -73,7 +73,7 @@ gantt
 
 ### F4: Linux (≈ 8 semanas)
 - **F4a, receptor Linux** (Windows → Linux): decodificación VAAPI con OpenH264 de respaldo, visor `wgpu` en Wayland y X11.
-- **F4b, fuente Linux en duplicar:** portal y PipeWire con `restore_token`; X11 con XShm.
+- **F4b, fuente Linux en duplicar:** portal y PipeWire con `restore_token` en GNOME Wayland; X11 con XShm como respaldo.
 - **F4c, fuente Linux en extender:** backends `mutter-virtual`, `kwin-virtual` y `wlroots-headless`, y luego `evdi`. Codificación VAAPI.
 - **Salida:** las cuatro combinaciones (W→W, W→L, L→W, L→L) en duplicar y en extender, en GNOME 46+, Plasma 6 y Sway, con los mismos umbrales que F2.
 
