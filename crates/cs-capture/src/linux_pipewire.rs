@@ -5,7 +5,7 @@
 //! se retrasa.
 
 use pipewire as pw;
-use pw::{properties::properties, spa};
+use pw::spa;
 use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -106,13 +106,13 @@ fn run_i420(
     stop_rx: pw::channel::Receiver<()>,
 ) -> Result<(), PipeWireCaptureError> {
     pw::init();
-    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
-    let context = pw::context::Context::new(&main_loop)?;
+    let main_loop = pw::MainLoop::new()?;
+    let context = pw::Context::new(&main_loop)?;
     let core = context.connect_fd(fd, None)?;
     let stream = pw::stream::Stream::new(
         &core,
         "crossscreen-screen-capture",
-        properties! {
+        pw::properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Screen",
@@ -123,7 +123,7 @@ fn run_i420(
     let dimensions_for_process = Arc::clone(&dimensions);
     let _listener = stream
         .add_local_listener_with_user_data(())
-        .param_changed(move |_, _, id, param| {
+        .param_changed(move |_, id, _, param| {
             if id != pw::spa::param::ParamType::Format.as_raw() {
                 return;
             }
@@ -266,8 +266,9 @@ fn run_i420(
     .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?
     .0
     .into_inner();
-    let mut params = [spa::pod::Pod::from_bytes(&values)
-        .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?];
+    let pod = spa::pod::Pod::from_bytes(&values)
+        .ok_or_else(|| PipeWireCaptureError::Format("formato PipeWire inválido".into()))?;
+    let mut params = [pod as *const spa::pod::Pod as *const libspa_sys::spa_pod];
     stream.connect(
         spa::utils::Direction::Input,
         Some(node_id),
