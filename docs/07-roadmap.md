@@ -22,17 +22,23 @@ gantt
 
 ---
 
-## Estado a 2026-11-08
+## Estado a 2026-11-09 (`v0.0.7-alpha.39`)
 
-| Fase | Estado |
-|---|---|
-| F0 | ✅ En lo esencial: workspace, CI (configurado; aún sin ejecutar en GitHub), `cargo-deny` en verde, licencias verificadas. Pendiente: `cs-testkit`/`netsim` y *fuzzing* con `cargo-fuzz` |
-| F1 | 🟡 Windows hecho: PoC-1, 2, 3 y 5 completas; PoC-4 solo en loopback. Pendientes: PoC-6 (cámara), PoC-7 y 8 (Linux), PoC-9/10/11 parcialmente cubiertas por los tests y el panel |
-| F2 | 🟡 Cadena completa funcionando en un mismo equipo (captura → `Present()` p50 29 / p95 32 ms, 0 pérdidas). Faltan: prueba entre dos PCs por cable y Wi-Fi, estabilidad de 2 h, integración en agente/panel, y reducir `Present()`→*vblank* (~33 ms en ventana) |
-| F3 | 🟡 Adelantada: el monitor virtual con VDD y la topología CCD ya funcionan (PoC-1), aunque falta integrarlos en el agente |
-| F4–F8 | ⏳ No iniciadas |
+Leyenda: ✅ cumplido · 🟡 en parte · ❌ pendiente. Detalle y bitácora en [ESTADO.md](ESTADO.md).
 
-**Riesgo nuevo para F2:** en este portátil (Intel Iris Xe) la codificación MF no alcanza el presupuesto de latencia. Hay que medir en hardware con NVENC/AMF o probar oneVPL antes de dar por cerrado el objetivo de ≤ 40 ms *glass-to-glass*.
+| Fase | Hecho | Falta para cumplir la salida |
+|---|---|---|
+| **F0** Fundamentos | ✅ CI en Windows y Linux, release automática, `cargo-deny`, licencias, ADR | `cs-testkit`/`netsim` completo (hay inyector Gilbert-Elliott en `cs-transport`) y *fuzzing* con `cargo-fuzz` |
+| **F1** PoC | ✅ PoC-1 a 5, 7 (Mutter), 8 (Mutter/portal), 9, 10, 11 | **PoC-6**: medición *glass-to-glass* con cámara; PoC-3/5 en Linux con VAAPI; PoC-7 en KDE y Sway |
+| **F2** MVP Windows → Windows | ✅ cadena completa entre dos PCs por Wi-Fi, emparejamiento, mDNS, cursor, panel con estadísticas, reconexión, tests de seguridad negativos | **Medir** 1080p60 durante 2 h y p95 *glass-to-glass* ≤ 40 ms **por cable** |
+| **F3** Extender en Windows | ✅ VDD + CCD, resolución del receptor, retirada limpia, ventana de gracia | Prueba de suspensión/reanudación y de *kill* del agente con el monitor activo |
+| **F4** Linux | ✅ receptor (OpenH264 + wgpu, Wayland/X11); fuente duplicar (portal + PipeWire) y extender (monitor virtual de Mutter) en GNOME; entrada y portapapeles; reconexión | **VAAPI** (decodificar y codificar por GPU); `restore_token` (no pedir el diálogo cada vez); respaldo X11/XShm; **KDE Plasma 6 y Sway**; **probar Linux → Linux** |
+| **F5** Robustez y Wi-Fi | ✅ FEC adaptativo y entrelazado, perfiles de red, ventana de gracia, 0 congelaciones con ~5 % de pérdida en ráfagas (Gilbert-Elliott) | Control de tasa adaptativo (el codificador MF de Intel ignora el cambio de bitrate en caliente); migración de interfaz; medir p95 ≤ 60 ms en Wi-Fi 6 |
+| **F6** Entrada remota | ✅ ratón y teclado en las tres direcciones (SendInput; Mutter `RemoteDesktop`/portal en Linux), liberación de teclas al cortar | Táctil y pluma; **medir** latencia de ratón ≤ 1 RTT + 2 ms y 10 000 eventos sin pérdidas |
+| **F7** Valor añadido | ✅ portapapeles de **texto** bidireccional, perfiles de red; arranque automático, registros, OpenH264 desde el panel | Portapapeles de **imágenes**, **audio** (Opus), **transferencia de archivos**, **varios monitores virtuales** por sesión |
+| **F8** Avanzado | — | Driver IddCx propio, HEVC/AV1, HDR, receptor web |
+
+Para 1.0, además: auditoría de seguridad externa, firma de código e instalador de Windows (con regla de firewall).
 
 ### F0: Fundamentos (≈ 3 semanas)
 - Repositorio con la estructura de [05-estructura-monorepo.md](05-estructura-monorepo.md), CI y `cargo-deny`.
