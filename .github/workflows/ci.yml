@@ -47,7 +47,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Dependencias del sistema (ventana X11/Wayland y PipeWire)
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libpipewire-0.3-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libpipewire-0.3-dev libclang-dev
       # El emisor Linux usa Portal/PipeWire y OpenH264 por software; el modo
       # extender y la entrada/portapapeles siguen siendo trabajo posterior.
       - name: Clippy y tests
