@@ -2,9 +2,9 @@
 
 Plataforma open source para usar un segundo computador como **monitor adicional real** de otro a través de Ethernet o Wi-Fi, con soporte bidireccional Windows ⇄ Linux.
 
-> Estado: **alfa.** Windows → Windows funciona entre dos equipos reales (monitor extendido, ratón y teclado remotos, portapapeles, panel de escritorio).
+> Estado: **alfa.** Funcionan las tres direcciones entre equipos reales: **Windows → Windows**, **Windows → Linux** y **Linux → Windows** (extender o duplicar), con ratón y teclado remotos, portapapeles de texto opcional, reconexión automática y panel de escritorio en ambos sistemas.
 >
-> **Linux como pantalla (Windows → Linux)** ya funciona en Ubuntu real: guía en [`docs/11-receptor-linux.md`](docs/11-receptor-linux.md). Linux como fuente ya tiene un emisor experimental para duplicar un monitor GNOME mediante Portal/PipeWire; aún falta validarlo en hardware real.
+> Guías: [Windows ↔ Windows](docs/10-prueba-dos-equipos.md) · [Linux (receptor y fuente)](docs/11-receptor-linux.md).
 
 ## Qué funciona hoy
 
@@ -14,7 +14,7 @@ Plataforma open source para usar un segundo computador como **monitor adicional 
 | `cs-protocol`: mensajes de control (postcard) y cabecera de vídeo de 24 B | ✅ | *Round-trip*, partición arbitraria del flujo y basura aleatoria sin pánico |
 | `cs-security`: identidad Ed25519, emparejamiento SPAKE2, verificadores TLS con huella fijada, almacén de confianza, limitador de intentos | ✅ | Tests de PIN incorrecto y de MITM con PIN correcto |
 | `cs-transport`: QUIC (quinn) con TLS 1.3 mutuo, *packetizer* y reensamblador con FEC Reed-Solomon, emparejamiento sobre QUIC | ✅ | Tests de integración en loopback real; rechazo de un par no fijado |
-| `cs-discovery`: anuncio y exploración mDNS `_crossscreen._udp` | ✅ compila; ⚠️ falta probarlo entre equipos (PoC-10) | Tests de TXT |
+| `cs-discovery`: anuncio y exploración mDNS `_crossscreen._udp` | ✅ | Usado por el panel para encontrar equipos en la LAN |
 | `cs-session`: máquina de estados con reconexión y gracia del monitor | ✅ | Tests de transiciones |
 | CLI `crossscreen`: `id`, `pair-listen`, `pair`, `peers`, `forget`, `discover`, `bench-serve`, `bench` | ✅ | Probada de punta a punta en un equipo |
 | Clave privada protegida por el SO | ✅ Windows (DPAPI, con migración) / ❌ Linux (archivo 0600; Secret Service pendiente) | Tests de ida y vuelta, migración y blob manipulado |
@@ -22,20 +22,25 @@ Plataforma open source para usar un segundo computador como **monitor adicional 
 | `cs-capture` (Windows): DXGI Desktop Duplication del monitor virtual en GPU, cursor fuera de banda, recuperación ante cambio de modo | ✅ | [PoC-2](docs/poc-results/poc-02-captura.md): 0,64 ms p95 de CPU por frame |
 | `cs-encode` (Windows): H.264 por hardware (Media Foundation, Intel QSV) con entrada D3D11 y BGRA→NV12 en GPU | ✅ funciona; ⚠️ **no cumple el objetivo de latencia en este portátil** (1080p60 p95 ≈ 11 ms frente a ≤ 6 ms) | [PoC-3](docs/poc-results/poc-03-codificacion.md) |
 | `cs-decode` + `cs-render` + `crossscreen-viewer` (Windows): decodificación por hardware y presentación D3D11 sin copias | ✅ | [PoC-5](docs/poc-results/poc-05-decodificacion-render.md): decodificación + presentación ≈ 3,6 ms p95 en ventana |
-| `cs-ipc` + `crossscreen-agent` + panel Tauri (`apps/desktop`) | ✅ Windows; ⚠️ IPC de Linux compila pero no se ha ejecutado | Comunicación real agente ↔ panel; canal restringido al usuario actual |
+| `cs-ipc` + `crossscreen-agent` + panel Tauri (`apps/desktop`) | ✅ Windows y Linux | Comunicación real agente ↔ panel; canal restringido al usuario actual |
 | `crossscreen-helper` (Windows, admin bajo demanda): instala y desinstala Virtual-Display-Driver verificando el hash de cada archivo, y reinicia el dispositivo | ✅ | Instalado y recuperado un código 43 en este equipo ([PoC-1](docs/poc-results/poc-01-vdd.md)) |
 | `cs-display` (Windows): mostrar y retirar el monitor virtual con CCD de rutas explícitas y fijar el modo, sin privilegios | ✅ | 100/100 ciclos sin fallos; `crossscreen display show\|hide\|list\|cycle` |
-| Linux como receptor: `crossscreen-viewer --listen` con OpenH264 (binario de Cisco, por CPU) y wgpu (Vulkan/GL), X11 y Wayland | ✅ validado en Ubuntu real; VAAPI y portapapeles pendientes | Prueba Windows → Ubuntu completada; métricas detalladas pendientes de documentar |
-| Instalador visual Linux | 🟡 experimental | AppImage y `.deb`, incluye panel Tauri y agente; requiere Ubuntu GNOME y validación fuera de CI |
-| Linux como fuente: duplicar el escritorio y transmitir a Windows | 🟡 experimental | XDG Desktop Portal/PipeWire + OpenH264; requiere Ubuntu GNOME y validación fuera de CI |
+| Linux como receptor: `crossscreen-viewer --listen` con OpenH264 (binario de Cisco, por CPU) y wgpu (Vulkan/GL), X11 y Wayland | ✅ validado en Ubuntu real | Prueba Windows → Ubuntu completada; VAAPI (GPU) pendiente |
+| Linux como fuente: **extender** (monitor virtual de GNOME, API de Mutter) y **duplicar** (XDG Desktop Portal + PipeWire), OpenH264 | ✅ validado en Ubuntu real | Duplicar y extender probados por el dueño; extender también contra Mutter 46.2 *headless* |
+| Entrada remota hacia Linux (Mutter `RemoteDesktop` / portal) y portapapeles en Linux (X11/XWayland) | ✅ implementado; ⚠️ pendiente de probar en Ubuntu real | Inyección real contra Mutter 46.2; portapapeles entre procesos con Xvfb |
+| Reconexión automática del emisor (Windows y Linux) | ✅ | Corte de red de 12 s a mitad de transmisión: reconexión 1,9 s después de volver la red, sin pérdidas |
+| Instalación en Linux: `.deb`, AppImage y `.tar.gz`; OpenH264 se instala desde el panel | ✅ | Descarga oficial de Cisco con SHA-256 verificado |
+| Registros por ejecución (panel, agente, visor, CLI) con botón «Abrir carpeta de registros» | ✅ | `%LOCALAPPDATA%\CrossScreen\logs` · `~/.local/state/crossscreen/logs` |
 | **Cadena completa (MVP F2, Windows):** `crossscreen stream` (emisor: monitor virtual → captura → codificación → QUIC) y `crossscreen-viewer --listen` (receptor: QUIC → decodificación → presentación con cursor real) | ✅ validado entre dos equipos por Wi-Fi | Captura → `Present()` en el mismo equipo: p50 29 ms / p95 32 ms; 0 frames perdidos ([emisor](docs/poc-results/mvp-f2-emisor.md), [receptor](docs/poc-results/mvp-f2-receptor.md)) |
-| Integración del streaming en el agente y el panel | ✅ Windows | Validado por el dueño con `v0.0.1-alpha.8` |
+| Integración del streaming en el agente y el panel | ✅ Windows y Linux | Validado por el dueño |
 
-## Descargar y probar (alfa, Windows x64)
+## Descargar y probar (alfa)
 
-Descarga `crossscreen-<versión>-windows-x64.zip` desde **Releases** y sigue [docs/10-prueba-dos-equipos.md](docs/10-prueba-dos-equipos.md). Los binarios no están firmados todavía y no necesitan el *Visual C++ Redistributable*.
+Desde **Releases**:
+- **Windows x64:** `crossscreen-<versión>-windows-x64.zip` — guía [docs/10-prueba-dos-equipos.md](docs/10-prueba-dos-equipos.md). Sin firma de código todavía; no necesita el *Visual C++ Redistributable*.
+- **Linux x86_64 (Ubuntu 22.04/24.04):** `CrossScreen_<versión>_amd64.deb` (panel instalable), `.AppImage` o `crossscreen-<versión>-linux-x64.tar.gz` — guía [docs/11-receptor-linux.md](docs/11-receptor-linux.md).
 
-Para publicar una versión nueva: `git tag v0.0.1-alpha.N && git push origin v0.0.1-alpha.N`. GitHub Actions compila en un Windows limpio y adjunta el `.zip` a la release (`.github/workflows/release.yml`). Para empaquetar en local: `.\scripts\package-windows.ps1`.
+Para publicar una versión nueva: subir la versión en `Cargo.toml`, `apps/desktop/package.json` y `apps/desktop/src-tauri/tauri.conf.json` (el `.deb` solo se actualiza encima si la versión sube) y etiquetar `git tag v<versión>-alpha.N && git push origin v<versión>-alpha.N`. GitHub Actions compila en Windows y Ubuntu limpios y adjunta los paquetes a la release (`.github/workflows/release.yml`).
 
 ## Desarrollo
 
@@ -86,6 +91,7 @@ Un mismo binario puede actuar como fuente, receptor o ambos. "Bidireccional" sig
 | 8 | [Pruebas de concepto](docs/08-pruebas-de-concepto.md) | PoC necesarias para validar la viabilidad, con criterios de éxito medibles |
 | 9 | [Contrato de sesión del MVP](docs/09-contrato-sesion-mvp.md) | Protocolo entre emisor y receptor: control, vídeo y cursor |
 | 10 | [Prueba entre dos equipos](docs/10-prueba-dos-equipos.md) | Paso a paso para probar Windows → Windows por cable y Wi-Fi |
+| 11 | [Linux](docs/11-receptor-linux.md) | Ubuntu como pantalla y como fuente (extender/duplicar), códec, registros |
 | — | [Resultados de las PoC](docs/poc-results/) | Mediciones reales de cada prueba |
 | — | [Decisiones arquitectónicas (ADR)](docs/adr/README.md) | Registro de decisiones |
 
