@@ -21,6 +21,10 @@ pub mod text;
 #[cfg(windows)]
 mod win;
 pub use bridge::ClipboardBridge;
+#[cfg(not(windows))]
+mod linux;
+#[cfg(not(windows))]
+pub use linux::LinuxClipboard;
 #[cfg(windows)]
 pub use win::Win32Clipboard;
 

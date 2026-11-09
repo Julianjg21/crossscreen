@@ -44,6 +44,7 @@ allow = [
     "CDLA-Permissive-2.0",
     "MPL-2.0", # solo a nivel de archivo (webpki-roots); no contamina
     "CC0-1.0", # dominio público (hexf-parse, vía naga/wgpu); más permisiva que MIT
+    "BSL-1.0", # Boost: permisiva (OSI), sin obligaciones en binarios; clipboard-win/error-code vía arboard, solo en Windows (CrossScreen usa arboard solo en Linux)
 ]
 # GPL / AGPL / LGPL quedan rechazadas por omisión.
 # Excepciones LGPL (enlace dinámico) se añadirán aquí explícitamente con justificación.

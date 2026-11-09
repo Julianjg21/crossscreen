@@ -18,6 +18,8 @@ pub mod stats;
 pub mod yuv;
 
 #[cfg(not(windows))]
+pub mod linux_input;
+#[cfg(not(windows))]
 pub mod linux_mutter;
 #[cfg(all(not(windows), feature = "linux-pipewire"))]
 pub mod linux_pipewire;

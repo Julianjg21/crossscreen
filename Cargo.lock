@@ -136,6 +136,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arboard"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
+dependencies = [
+ "clipboard-win",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "parking_lot",
+ "percent-encoding",
+ "windows-sys 0.61.2",
+ "x11rb",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -701,6 +718,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
+name = "clipboard-win"
+version = "5.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
+dependencies = [
+ "error-code",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -903,7 +929,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crossscreen-agent"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -924,7 +950,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-cli"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "bytes",
@@ -946,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-desktop"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cs-ipc",
  "cs-log",
@@ -960,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-helper"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -973,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-viewer"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1013,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "cs-capture"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "ashpd",
  "futures-util",
@@ -1030,8 +1056,9 @@ dependencies = [
 
 [[package]]
 name = "cs-clipboard"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
+ "arboard",
  "cs-protocol",
  "sha2",
  "thiserror 2.0.21",
@@ -1042,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "cs-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "hex",
  "postcard",
@@ -1053,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "cs-decode"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "openh264",
@@ -1064,7 +1091,7 @@ dependencies = [
 
 [[package]]
 name = "cs-discovery"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cs-core",
  "mdns-sd",
@@ -1075,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "cs-display"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cs-core",
  "thiserror 2.0.21",
@@ -1085,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "cs-encode"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "openh264",
@@ -1096,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "cs-input"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cs-core",
  "cs-protocol",
@@ -1107,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "cs-ipc"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1119,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "cs-log"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -1127,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "cs-pipeline"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1149,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "cs-protocol"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cs-core",
  "postcard",
@@ -1160,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "cs-render"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "pollster",
  "thiserror 2.0.21",
@@ -1171,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "cs-security"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "cs-core",
  "hex",
@@ -1192,14 +1219,14 @@ dependencies = [
 
 [[package]]
 name = "cs-session"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "cs-transport"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytes",
  "cs-core",
@@ -1406,7 +1433,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1444,7 +1471,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.7.4",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1619,8 +1646,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "error-code"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
 name = "event-listener"
@@ -3287,7 +3320,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3389,6 +3422,7 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
 ]
@@ -4291,7 +4325,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4647,7 +4681,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5643,10 +5677,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6735,7 +6769,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7252,7 +7286,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -51,40 +51,36 @@ impl ClipboardBridge {
     /// nada al par (ver [`crate::ClipboardSync::prime`]).
     pub fn spawn(poll: Duration) -> Result<Self, ClipboardError> {
         #[cfg(windows)]
-        {
-            let slot = Arc::new(Slot::default());
-            let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
-            let stats = Arc::new(Mutex::new(SyncStats::default()));
-            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-            let (sl, st) = (slot.clone(), stats.clone());
-            let thread = std::thread::Builder::new()
-                .name("cs-clipboard".into())
-                .spawn(move || win_worker(poll, sl, out_tx, st, ready_tx))
-                .map_err(|_| ClipboardError::Os {
-                    call: "thread::spawn",
-                    code: 0,
-                })?;
-            // Esperar a que la ventana propietaria exista para informar errores.
-            match ready_rx.recv() {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    let _ = thread.join();
-                    return Err(e);
-                }
-                Err(_) => return Err(ClipboardError::Unsupported),
-            }
-            Ok(ClipboardBridge {
-                slot,
-                outgoing: out_rx,
-                stats,
-                thread: Some(thread),
-            })
-        }
+        let make = crate::Win32Clipboard::new;
         #[cfg(not(windows))]
-        {
-            let _ = poll;
-            Err(ClipboardError::Unsupported)
+        let make = crate::LinuxClipboard::new;
+        let slot = Arc::new(Slot::default());
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stats = Arc::new(Mutex::new(SyncStats::default()));
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (sl, st) = (slot.clone(), stats.clone());
+        let thread = std::thread::Builder::new()
+            .name("cs-clipboard".into())
+            .spawn(move || worker(make, poll, sl, out_tx, st, ready_tx))
+            .map_err(|_| ClipboardError::Os {
+                call: "thread::spawn",
+                code: 0,
+            })?;
+        // Esperar a que el backend exista para informar errores.
+        match ready_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                let _ = thread.join();
+                return Err(e);
+            }
+            Err(_) => return Err(ClipboardError::Unsupported),
         }
+        Ok(ClipboardBridge {
+            slot,
+            outgoing: out_rx,
+            stats,
+            thread: Some(thread),
+        })
     }
 
     /// Texto recibido del par: se aplicará al portapapeles local (sin eco).
@@ -134,7 +130,6 @@ pub async fn next_outgoing(bridge: &mut Option<ClipboardBridge>) -> Option<Clipb
 }
 
 /// Espera hasta `poll` a que llegue un texto remoto. `Err(())` si se cerró.
-#[cfg_attr(not(windows), allow(dead_code))] // solo la usa el hilo de Windows (y los tests)
 fn wait_remote(slot: &Slot, poll: Duration) -> Result<Option<ClipboardText>, ()> {
     let guard = slot.state.lock().map_err(|_| ())?;
     let (mut guard, _) = slot
@@ -147,17 +142,55 @@ fn wait_remote(slot: &Slot, poll: Duration) -> Result<Option<ClipboardText>, ()>
     Ok(guard.pending.take())
 }
 
+/// Operaciones del portapapeles del SO que usa el hilo del puente. Los
+/// backends viven en su propio hilo (Win32 exige el hilo de la ventana
+/// propietaria; X11, un único dueño de la conexión).
+trait Backend {
+    /// Contador que avanza cuando cambia el contenido.
+    fn sequence_number(&self) -> u32;
+    /// Texto actual (sin normalizar; se canonicaliza al comparar).
+    fn read_text(&self) -> Result<Option<String>, ClipboardError>;
+    /// Escribe texto canónico; devuelve el contador tras escribir.
+    fn write_text(&self, canonical: &str) -> Result<u32, ClipboardError>;
+}
+
 #[cfg(windows)]
-fn win_worker(
+impl Backend for crate::Win32Clipboard {
+    fn sequence_number(&self) -> u32 {
+        crate::Win32Clipboard::sequence_number(self)
+    }
+    fn read_text(&self) -> Result<Option<String>, ClipboardError> {
+        crate::Win32Clipboard::read_text(self)
+    }
+    fn write_text(&self, canonical: &str) -> Result<u32, ClipboardError> {
+        crate::Win32Clipboard::write_text(self, canonical)
+    }
+}
+
+#[cfg(not(windows))]
+impl Backend for crate::LinuxClipboard {
+    fn sequence_number(&self) -> u32 {
+        crate::LinuxClipboard::sequence_number(self)
+    }
+    fn read_text(&self) -> Result<Option<String>, ClipboardError> {
+        crate::LinuxClipboard::read_text(self)
+    }
+    fn write_text(&self, canonical: &str) -> Result<u32, ClipboardError> {
+        crate::LinuxClipboard::write_text(self, canonical)
+    }
+}
+
+fn worker<B: Backend>(
+    make: fn() -> Result<B, ClipboardError>,
     poll: Duration,
     slot: Arc<Slot>,
     outgoing: tokio::sync::mpsc::UnboundedSender<ClipboardText>,
     stats: Arc<Mutex<SyncStats>>,
     ready: std::sync::mpsc::Sender<Result<(), ClipboardError>>,
 ) {
-    use crate::{ClipboardSync, RemoteAction, Win32Clipboard};
+    use crate::{ClipboardSync, RemoteAction};
 
-    let cb = match Win32Clipboard::new() {
+    let cb = match make() {
         Ok(cb) => cb,
         Err(e) => {
             let _ = ready.send(Err(e));

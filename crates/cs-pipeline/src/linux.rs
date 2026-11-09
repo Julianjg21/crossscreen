@@ -19,12 +19,15 @@ use crate::timing::wire_pts;
 use crate::{SenderConfig, STREAM_ID};
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
+use cs_capture::linux_input::InputAction;
 use cs_capture::linux_mutter::MutterVirtual;
 use cs_capture::linux_pipewire::I420Buffer;
 use cs_capture::linux_portal::{describe_error, PortalCaptureSession, PortalSession};
 use cs_core::{Codec, Mode, Roles, StreamMode};
 use cs_encode::openh264_backend::{I420Frame, OpenH264Encoder};
 use cs_encode::{EncodeControl, EncoderConfig, VideoEncoder};
+use cs_input::evdev;
+use cs_input::{ButtonState, InputEvent, PressedState};
 use cs_protocol::control::{ByeReason, ControlMessage, Hello, SinkCapabilities, StartStream};
 use cs_protocol::PROTOCOL_VERSION;
 use cs_transport::pacer::{self, PacedSendOptions, Pacer, PacerConfig};
@@ -305,6 +308,71 @@ impl SystemSession {
             SystemSession::Mutter(m) => m.wait_closed().await,
         }
     }
+
+    /// ¿Se puede inyectar ratón y teclado en esta sesión?
+    fn can_inject(&self) -> bool {
+        match self {
+            SystemSession::Portal(p) => p.can_inject(),
+            SystemSession::Mutter(m) => m.can_inject(),
+        }
+    }
+
+    async fn inject(&self, action: &InputAction) -> Result<(), String> {
+        match self {
+            SystemSession::Portal(p) => p.inject(action).await.map_err(|e| e.to_string()),
+            SystemSession::Mutter(m) => m.inject(action).await.map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// Traduce un evento del protocolo a acciones de GNOME (códigos evdev y
+/// píxeles del stream de tamaño `size`).
+fn to_actions(
+    event: &InputEvent,
+    size: (u32, u32),
+    wheel: &mut evdev::WheelAccumulator,
+) -> Vec<InputAction> {
+    match *event {
+        InputEvent::MouseMove { x_norm, y_norm, .. } => vec![InputAction::PointerAbs {
+            x: evdev::denormalize(x_norm, size.0),
+            y: evdev::denormalize(y_norm, size.1),
+        }],
+        InputEvent::MouseButton { button, state, .. } => vec![InputAction::Button {
+            code: evdev::button(button),
+            pressed: state == ButtonState::Pressed,
+        }],
+        InputEvent::MouseWheel {
+            delta_x, delta_y, ..
+        } => {
+            let (sx, sy) = wheel.push(delta_x, delta_y);
+            let mut v = Vec::new();
+            if sy != 0 {
+                v.push(InputAction::Axis {
+                    horizontal: false,
+                    steps: sy,
+                });
+            }
+            if sx != 0 {
+                v.push(InputAction::Axis {
+                    horizontal: true,
+                    steps: sx,
+                });
+            }
+            v
+        }
+        InputEvent::Key {
+            scancode,
+            extended,
+            state,
+            ..
+        } => evdev::keycode(scancode, extended)
+            .map(|code| InputAction::Key {
+                code,
+                pressed: state == ButtonState::Pressed,
+            })
+            .into_iter()
+            .collect(),
+    }
 }
 
 /// Captura en marcha: hilo de codificación y sus canales.
@@ -449,7 +517,7 @@ pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
     }
 
     tracing::info!("pidiendo la pantalla al XDG Desktop Portal (diálogo del sistema)");
-    let opened = tokio::time::timeout(PORTAL_TIMEOUT, PortalCaptureSession::open())
+    let opened = tokio::time::timeout(PORTAL_TIMEOUT, PortalCaptureSession::open(cfg.accept_input))
         .await
         .map_err(|_| {
             anyhow!(
@@ -486,7 +554,7 @@ async fn open_virtual_monitor(
     size: (u32, u32),
 ) -> Result<()> {
     tracing::info!("creando monitor virtual de GNOME {}x{}", size.0, size.1);
-    let mutter = MutterVirtual::open().await?;
+    let mutter = MutterVirtual::open(cfg.accept_input).await?;
     let node = mutter.node_id;
     prepared.system = Some(SystemSession::Mutter(mutter));
     let fd = local_pipewire()?;
@@ -519,12 +587,6 @@ pub(crate) async fn run(
     prepared: Prepared,
     shutdown: watch::Receiver<bool>,
 ) -> Result<SenderReport> {
-    if cfg.accept_input {
-        tracing::info!("la entrada remota aún no está disponible en el emisor Linux");
-    }
-    if cfg.clipboard {
-        tracing::info!("el portapapeles aún no está disponible en el emisor Linux");
-    }
     let started_at = Instant::now();
     let mut prepared = prepared;
     let outcome = session(&conn, &cfg, &mut prepared, shutdown).await;
@@ -647,6 +709,25 @@ async fn session(
     let mut health = tokio::time::interval(Duration::from_secs(1));
     // Señal del sistema: el usuario dejó de compartir desde GNOME.
     let system = prepared.system.as_ref();
+    let can_inject = cfg.accept_input && system.is_some_and(SystemSession::can_inject);
+    tracing::info!(
+        "entrada remota (ratón y teclado): {}",
+        if can_inject { "sí" } else { "no" }
+    );
+    let mut pressed = PressedState::new();
+    let mut wheel = evdev::WheelAccumulator::default();
+    // Portapapeles de texto (opcional); si no se puede abrir, se sigue sin él.
+    let mut clipboard = if cfg.clipboard {
+        match cs_clipboard::ClipboardBridge::spawn(cs_clipboard::bridge::DEFAULT_POLL) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::warn!("portapapeles no disponible: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let system_closed = async {
         match system {
             Some(s) => s.wait_closed().await,
@@ -657,6 +738,12 @@ async fn session(
     let end_reason = loop {
         tokio::select! {
             _ = health.tick() => {}
+            Some(msg) = cs_clipboard::bridge::next_outgoing(&mut clipboard) => {
+                if let Err(e) = ctl.send(&ControlMessage::ClipboardText(msg)).await {
+                    break format!("conexión de control perdida: {e}");
+                }
+                cs.clipboard_sent += 1;
+            }
             _ = &mut system_closed => {
                 break "se dejó de compartir la pantalla desde el sistema".to_owned();
             }
@@ -696,7 +783,31 @@ async fn session(
                 Ok(Some(ControlMessage::StopStream { .. })) => {
                     break "el receptor pidió StopStream".to_owned();
                 }
-                // Entrada, portapapeles, ping…: aún no se usan en Linux.
+                Ok(Some(ControlMessage::Input(ev))) => {
+                    if can_inject && ev.stream_id() == STREAM_ID {
+                        let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
+                        pressed.record(&ev);
+                        for action in to_actions(&ev, size, &mut wheel) {
+                            match system.map(|s| s.inject(&action)) {
+                                Some(f) => match f.await {
+                                    Ok(()) => cs.input_events_injected += 1,
+                                    Err(e) => {
+                                        cs.input_events_blocked += 1;
+                                        tracing::debug!("entrada remota no inyectada: {e}");
+                                    }
+                                },
+                                None => cs.input_events_blocked += 1,
+                            }
+                        }
+                    }
+                }
+                Ok(Some(ControlMessage::ClipboardText(t))) => {
+                    if let Some(b) = clipboard.as_ref() {
+                        cs.clipboard_received += 1;
+                        b.deliver(t);
+                    }
+                }
+                // Ping y demás: no se usan en Linux.
                 Ok(Some(_)) => {}
                 Ok(None) => break "el receptor cerró el canal de control".to_owned(),
                 Err(error) => break format!("conexión de control perdida: {error}"),
@@ -706,6 +817,15 @@ async fn session(
             break "fallo en captura/codificación".to_owned();
         }
     };
+    // Nada debe quedar pulsado en GNOME (teclas, botones).
+    if let Some(sys) = system.filter(|_| can_inject) {
+        let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
+        for ev in pressed.release_all() {
+            for action in to_actions(&ev, size, &mut wheel) {
+                let _ = sys.inject(&action).await;
+            }
+        }
+    }
     let _ = ctl
         .send(&ControlMessage::Bye {
             reason: ByeReason::UserRequested,
@@ -812,8 +932,74 @@ async fn send_video(
 
 #[cfg(test)]
 mod tests {
-    use super::virtual_size;
+    use super::{to_actions, virtual_size};
+    use cs_capture::linux_input::InputAction;
     use cs_core::Mode;
+    use cs_input::{evdev::WheelAccumulator, ButtonState, InputEvent, MouseButton};
+
+    #[test]
+    fn protocol_events_become_gnome_actions() {
+        let mut w = WheelAccumulator::default();
+        let size = (1920, 1080);
+        assert_eq!(
+            to_actions(
+                &InputEvent::MouseMove {
+                    stream_id: 1,
+                    x_norm: u16::MAX,
+                    y_norm: 0
+                },
+                size,
+                &mut w
+            ),
+            vec![InputAction::PointerAbs { x: 1919.0, y: 0.0 }]
+        );
+        assert_eq!(
+            to_actions(
+                &InputEvent::MouseButton {
+                    stream_id: 1,
+                    button: MouseButton::Right,
+                    state: ButtonState::Pressed
+                },
+                size,
+                &mut w
+            ),
+            vec![InputAction::Button {
+                code: 0x111,
+                pressed: true
+            }]
+        );
+        // Rueda: un escalón arriba en Windows = -1 en Linux.
+        assert_eq!(
+            to_actions(
+                &InputEvent::MouseWheel {
+                    stream_id: 1,
+                    delta_x: 0,
+                    delta_y: 120
+                },
+                size,
+                &mut w
+            ),
+            vec![InputAction::Axis {
+                horizontal: false,
+                steps: -1
+            }]
+        );
+        // Flecha arriba (E0 48) y tecla sin equivalente.
+        let key = |scancode, extended| InputEvent::Key {
+            stream_id: 1,
+            scancode,
+            extended,
+            state: ButtonState::Released,
+        };
+        assert_eq!(
+            to_actions(&key(0x48, true), size, &mut w),
+            vec![InputAction::Key {
+                code: 103,
+                pressed: false
+            }]
+        );
+        assert!(to_actions(&key(0x7E, true), size, &mut w).is_empty());
+    }
 
     #[test]
     fn virtual_monitor_uses_valid_receiver_mode_with_even_size() {

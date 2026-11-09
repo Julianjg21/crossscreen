@@ -9,8 +9,9 @@ Tu PC con Windows (PC-A) **extiende su escritorio** y el equipo Linux (PC-B) lo 
 | Ratón y teclado del Linux controlando el monitor extendido | ✅ (mismo código que en Windows; pendiente de probar en tu Ubuntu) |
 | Cursor de la fuente dibujado encima del vídeo | ✅ (aparece cuando llega su primera forma) |
 | Decodificación por hardware (VAAPI) | ❌ pendiente: por ahora decodifica la CPU |
-| Portapapeles en Linux | ❌ pendiente: el visor avisa y sigue sin él |
-| Linux como fuente (duplicar el escritorio hacia Windows) | 🟡 experimental: GNOME Wayland con Portal/PipeWire; modo `extend` pendiente |
+| Portapapeles de texto en Linux (ambos sentidos) | ✅ opcional (casilla del panel o `--clipboard`); X11/XWayland |
+| Linux como fuente: extender (monitor virtual de GNOME) y duplicar | ✅ GNOME en Wayland |
+| Ratón y teclado de Windows controlando Ubuntu (Linux como fuente) | ✅ extender: sin diálogo; duplicar: se pide en el mismo diálogo de compartir pantalla |
 
 ## Linux como fuente: Ubuntu → Windows (experimental)
 
@@ -32,7 +33,8 @@ Requisitos: los dos equipos emparejados y OpenH264 instalado en Ubuntu (`./fetch
 Cómo funciona y qué falta:
 - Con la pantalla quieta GNOME no envía imágenes nuevas; CrossScreen reenvía la última una vez por segundo, así que la imagen aparece al instante aunque nada se mueva.
 - Codificación por CPU (OpenH264): en las pruebas, ~10 ms por frame a 1080p.
-- Aún no: ratón y teclado desde Windows hacia Ubuntu, ni portapapeles. Para usar el monitor extendido, mueve el ratón de Ubuntu hacia ese lado de la pantalla.
+- **Ratón y teclado desde Windows:** al mover el ratón sobre la ventana del visor en Windows, controlas Ubuntu (en extender, el monitor virtual; en duplicar, la pantalla compartida). Al **duplicar**, el diálogo de GNOME pide además permitir el control remoto: acéptalo. Las teclas van por posición física (como un teclado conectado a Ubuntu), así que se respeta la distribución configurada en Ubuntu.
+- **Portapapeles:** marca «Sincronizar el portapapeles» en **los dos** equipos. Solo texto. Lo copiado antes de empezar no se envía.
 
 ## 1. Requisitos (Ubuntu 24.04, x86_64)
 Ubuntu Desktop ya trae casi todo. Si falta algo:

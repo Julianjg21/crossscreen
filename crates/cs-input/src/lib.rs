@@ -16,6 +16,7 @@ use cs_protocol::control::StreamId;
 pub use cs_protocol::control::{ButtonState, InputEvent, MouseButton};
 use std::collections::BTreeMap;
 
+pub mod evdev;
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
