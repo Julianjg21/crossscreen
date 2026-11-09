@@ -717,9 +717,9 @@ impl Agent {
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
         cfg.clipboard = clipboard;
-        // Control remoto de este equipo: explícito en Linux (sin diálogo del
-        // sistema al extender); por defecto sí en Windows.
-        cfg.accept_input = accept_input.unwrap_or(cfg!(windows));
+        // Control remoto de este equipo: siempre explícito (por defecto solo
+        // se transmite la imagen).
+        cfg.accept_input = accept_input.unwrap_or(false);
         match profile {
             StreamProfileInfo::Auto => {}
             StreamProfileInfo::Wifi => {

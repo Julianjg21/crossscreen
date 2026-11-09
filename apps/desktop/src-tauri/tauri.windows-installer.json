@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "publisher": "CrossScreen",
+    "copyright": "MIT OR Apache-2.0",
+    "resources": {
+      "../../../target/release/crossscreen-agent.exe": "crossscreen-agent.exe",
+      "../../../target/release/crossscreen-viewer.exe": "crossscreen-viewer.exe",
+      "../../../target/release/crossscreen.exe": "crossscreen.exe",
+      "../../../target/release/crossscreen-helper.exe": "crossscreen-helper.exe",
+      "../../../drivers/windows/vdd-manifest.toml": "vdd-manifest.toml",
+      "../../../docs/10-prueba-dos-equipos.md": "PRUEBA-DOS-EQUIPOS.md",
+      "../../../LICENSE-MIT": "LICENSE-MIT",
+      "../../../LICENSE-APACHE": "LICENSE-APACHE"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows/installer-hooks.nsh",
+        "languages": ["Spanish", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

@@ -116,7 +116,8 @@ impl SenderConfig {
             duration: None,
             static_refresh: Some(Duration::from_secs(1)),
             reconnect: None,
-            accept_input: true,
+            // Por defecto solo imagen: el control remoto se activa a propósito.
+            accept_input: false,
             clipboard: false,
             sim_loss: None,
         }

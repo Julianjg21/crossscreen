@@ -33,7 +33,7 @@ Requisitos: los dos equipos emparejados y OpenH264 instalado en Ubuntu (`./fetch
 Cómo funciona y qué falta:
 - Con la pantalla quieta GNOME no envía imágenes nuevas; CrossScreen reenvía la última una vez por segundo, así que la imagen aparece al instante aunque nada se mueva.
 - Codificación por CPU (OpenH264): en las pruebas, ~10 ms por frame a 1080p.
-- **Ratón y teclado desde Windows:** en Linux hay que **permitirlo** al iniciar: casilla «Permitir que el receptor controle este equipo» del panel (desactivada por defecto en Linux, porque al extender GNOME no muestra ningún aviso) o `--allow-remote-input` en la consola. Con eso, al mover el ratón sobre la ventana del visor en Windows, controlas Ubuntu (en extender, el monitor virtual; en duplicar, la pantalla compartida). Al **duplicar**, el diálogo de GNOME pide además permitir el control remoto: acéptalo. Las teclas van por posición física (como un teclado conectado a Ubuntu), así que se respeta la distribución configurada en Ubuntu.
+- **Ratón y teclado desde Windows:** hay que **permitirlo** al iniciar (por defecto solo se transmite la imagen): casilla «Permitir que el receptor controle este equipo» del panel o `--allow-remote-input` en la consola. Con eso, al mover el ratón sobre la ventana del visor en Windows, controlas Ubuntu (en extender, el monitor virtual; en duplicar, la pantalla compartida). Al **duplicar**, el diálogo de GNOME pide además permitir el control remoto: acéptalo. Las teclas van por posición física (como un teclado conectado a Ubuntu), así que se respeta la distribución configurada en Ubuntu.
 - **Portapapeles:** marca «Sincronizar el portapapeles» en **los dos** equipos. Solo texto. Lo copiado antes de empezar no se envía.
 
 ## 1. Requisitos (Ubuntu 24.04, x86_64)

@@ -1,7 +1,10 @@
 <#
 .SYNOPSIS
-  Compila (opcional) y empaqueta los ejecutables de CrossScreen para Windows x64
-  en dist\crossscreen-<versión>-windows-x64.zip.
+  Compila (opcional) y empaqueta CrossScreen para Windows x64:
+  - dist\CrossScreen_<versión>_x64-setup.exe (instalador NSIS: Program Files,
+    menú Inicio, desinstalador y reglas del firewall en redes privadas);
+  - dist\crossscreen-<versión>-windows-x64.zip (portable, sin instalar).
+  Si hay certificado (ver scripts\sign-windows.ps1) firma todos los .exe.
 
 .EXAMPLE
   .\scripts\package-windows.ps1            # compila en release y empaqueta
@@ -41,8 +44,28 @@ if (-not $NoBuild) {
 
   cargo build --release -p crossscreen-cli -p crossscreen-viewer -p crossscreen-helper -p crossscreen-agent
   if ($LASTEXITCODE -ne 0) { throw "cargo build falló" }
-  cargo build --release -p crossscreen-desktop --features custom-protocol
-  if ($LASTEXITCODE -ne 0) { throw "cargo build de crossscreen-desktop falló" }
+  # Firmar antes de empaquetarlos (el instalador los incluye tal cual).
+  $toSign = @("crossscreen", "crossscreen-viewer", "crossscreen-helper", "crossscreen-agent") |
+    ForEach-Object { Join-Path $root "target\release\$_.exe" }
+  & (Join-Path $PSScriptRoot "sign-windows.ps1") @toSign
+  if ($LASTEXITCODE -ne 0) { throw "la firma falló" }
+
+  # Panel + instalador NSIS. La configuración del instalador (recursos,
+  # ganchos del firewall) solo se aplica aquí, no en las compilaciones normales.
+  $configs = @("--config", "src-tauri/tauri.windows-installer.json")
+  if ($env:WINDOWS_CERT_PFX_BASE64) {
+    # Tauri firma el panel y el instalador con el mismo script.
+    $signScript = (Join-Path $PSScriptRoot "sign-windows.ps1") -replace '\\', '/'
+    $signCfg = Join-Path ([IO.Path]::GetTempPath()) "cs-tauri-sign.json"
+    @{ bundle = @{ windows = @{ signCommand = "pwsh -NoProfile -File `"$signScript`" %1" } } } |
+      ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $signCfg
+    $configs += @("--config", $signCfg)
+  }
+  Push-Location (Join-Path $root "apps\desktop")
+  npm.cmd exec -- tauri build --bundles nsis @configs
+  $code = $LASTEXITCODE
+  Pop-Location
+  if ($code -ne 0) { throw "tauri build (instalador) falló" }
 }
 
 $name = "crossscreen-$Version-windows-x64"
@@ -63,6 +86,16 @@ Copy-Item "drivers\windows\vdd-manifest.toml" $out
 Get-ChildItem $out -File | ForEach-Object {
   "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 } | Set-Content -Encoding utf8 (Join-Path $out "SHA256SUMS.txt")
+
+$setup = Get-ChildItem (Join-Path $root "target\release\bundle\nsis") -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime | Select-Object -Last 1
+if ($setup) {
+  Copy-Item $setup.FullName (Join-Path $root "dist")
+  "Instalador: dist\$($setup.Name)"
+  (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower() + "  $($setup.Name)"
+} elseif (-not $NoBuild) {
+  throw "no se generó el instalador NSIS"
+}
 
 $zip = Join-Path $root "dist\$name.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

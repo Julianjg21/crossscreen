@@ -12,10 +12,12 @@ Esta es una versión **alfa de prueba**. El objetivo es validar la cadena comple
 - La misma red local.
 - GPU con decodificación H.264 por hardware en el receptor (cualquier Intel, AMD o NVIDIA de los últimos ~10 años).
 
-## 0. Descargar
-1. En los dos equipos, descarga `crossscreen-<versión>-windows-x64.zip` desde la sección **Releases** del repositorio.
-2. Descomprímelo, por ejemplo en `C:\CrossScreen`.
-3. Puedes usar la **aplicación gráfica (`crossscreen-desktop.exe` con doble clic)** en ambos equipos o **PowerShell** en esa carpeta.
+## 0. Descargar e instalar
+**Recomendado: instalador.** En los dos equipos, descarga `CrossScreen_<versión>_x64-setup.exe` desde **Releases** y ejecútalo (pide permiso de administrador). Instala el panel, el agente y el visor en *Archivos de programa*, crea el acceso directo en el menú Inicio y el desinstalador, y **añade las reglas del firewall** para que el equipo pueda recibir pantalla en redes **privadas** (en redes públicas no abre nada). Para actualizar, ejecuta el instalador nuevo encima.
+
+**Alternativa portable:** `crossscreen-<versión>-windows-x64.zip`, descomprimido por ejemplo en `C:\CrossScreen`. Sin instalar nada; la primera vez que el equipo reciba pantalla, Windows preguntará por el firewall: pulsa **Permitir** (redes privadas).
+
+Se puede usar la **aplicación gráfica** (panel CrossScreen) o **PowerShell** en la carpeta de instalación.
 
 > Los ejecutables no están firmados todavía, así que Windows SmartScreen puede avisar. Para comprobar que la descarga está íntegra, compara los hashes con `SHA256SUMS.txt`:
 > `Get-FileHash .\crossscreen.exe`
@@ -76,7 +78,7 @@ En PC-B: `ipconfig`. Anota la **dirección IPv4** del adaptador que estés usand
 
 ### Durante la transmisión: qué probar
 - **Monitor extendido:** arrastra ventanas al monitor nuevo de PC-A y comprueba que se ven en PC-B.
-- **Ratón y teclado desde PC-B (F6):** con la ventana del visor enfocada en PC-B, el ratón y el teclado de PC-B controlan el monitor virtual de PC-A. Para desactivarlo: `--no-remote-input` en el visor (PC-B) o en `stream` (PC-A).
+- **Ratón y teclado desde PC-B (F6):** **desactivado por defecto** (por defecto solo se transmite la imagen). Para permitirlo, en PC-A marca «Permitir que el receptor controle este equipo» en el panel o usa `--allow-remote-input` en `stream`. Entonces, con la ventana del visor enfocada en PC-B, el ratón y el teclado de PC-B controlan el monitor virtual de PC-A.
 - **Portapapeles (F7), en ambos sentidos.** Está **desactivado por defecto** (el portapapeles puede contener contraseñas). Hay que activarlo **en los dos equipos**:
   - en el panel, con la casilla "Sincronizar el portapapeles de texto" al transmitir y al recibir;
   - por línea de comandos, añadiendo `--clipboard` al visor (PC-B) y a `stream` (PC-A).

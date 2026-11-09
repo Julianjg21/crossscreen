@@ -82,9 +82,9 @@ export default function Stream({
   const [codecBusy, setCodecBusy] = useState(false);
   const [codecError, setCodecError] = useState<string | null>(null);
   const codecMissing = !!status.openh264_required && !codecPath;
-  // Control remoto de este equipo: sí por defecto en Windows; en Linux hay
-  // que activarlo (al extender, GNOME no pide confirmación).
-  const [allowInput, setAllowInput] = useState(status.platform !== "linux");
+  // Control remoto de este equipo: desactivado por defecto (por defecto
+  // solo se transmite la imagen).
+  const [allowInput, setAllowInput] = useState(false);
   const [resOption, setResOption] = useState("native");
   const [hz, setHz] = useState(60);
   const [mbps, setMbps] = useState("20");
@@ -529,7 +529,7 @@ export default function Stream({
               </label>
               <p id="stream-input-help" className="muted" style={{ marginTop: 4 }}>
                 Quien mira la pantalla en el otro equipo podrá mover el ratón y escribir aquí.
-                {status.platform === "linux" && " En Linux está desactivado por defecto."}
+                {" "}Desactivado por defecto.
               </p>
 
               <label htmlFor="stream-profile" style={{ marginTop: 12 }}>

@@ -24,24 +24,33 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Tests (crates portables y de Windows sin pantalla)
         run: cargo test --workspace --exclude crossscreen-desktop
-      - name: Compilar y empaquetar
+      - name: Compilar, firmar (si hay certificado) y empaquetar
         shell: pwsh
+        # Sin estos secretos se publica sin firma (ver scripts/sign-windows.ps1).
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: ./scripts/package-windows.ps1
       - name: Artefacto del workflow
         uses: actions/upload-artifact@v4
         with:
           name: crossscreen-windows-x64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
       - name: Publicar release (solo con etiqueta)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/*-setup.exe
           prerelease: true
           generate_release_notes: true
           body: |
-            Versión de prueba (alfa). Sin firma de código: Windows SmartScreen puede avisar.
-            Instrucciones para probar entre dos equipos: `PRUEBA-DOS-EQUIPOS.md` dentro del zip.
+            Versión de prueba (alfa).
+            Windows: `CrossScreen_*_x64-setup.exe` instala el panel, el agente y el visor en Program Files, con acceso directo en el menú Inicio, desinstalador y reglas del firewall (solo redes privadas). El `.zip` es la versión portable. Si la release no está firmada, Windows SmartScreen puede avisar («Más información» → «Ejecutar de todas formas»).
+            Instrucciones para probar entre dos equipos: `PRUEBA-DOS-EQUIPOS.md`.
             Linux (Ubuntu como pantalla, Windows → Linux): `crossscreen-*-linux-x64.tar.gz`, guía `RECEPTOR-LINUX.md` dentro.
             En Linux x86_64, el panel visual se publica también como `.AppImage` y `.deb`; el agente Linux va incluido como recurso.
 

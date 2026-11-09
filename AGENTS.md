@@ -60,3 +60,7 @@ CrossScreen convierte un segundo PC en un **monitor adicional real** (monitor vi
 | `apps/agent` | `crossscreen-agent`: demonio de usuario |
 | `apps/desktop` | Panel Tauri |
 | `docs/poc-results/` | Mediciones reales de cada prueba |
+
+## Decisión del dueño: funciones opcionales
+Por defecto **solo se transmite la imagen**. Todo lo demás (control remoto, portapapeles, audio, transferencia de archivos y lo que venga) debe poder activarse y desactivarse, y empieza **desactivado**.
+
