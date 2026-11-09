@@ -1,13 +1,11 @@
-//! Consumo de un stream de vídeo PipeWire obtenido desde XDG Portal.
+﻿//! Consumo de un stream de vídeo PipeWire obtenido desde XDG Portal.
 //!
 //! El bucle de PipeWire vive en un hilo dedicado. Los buffers se copian a un
 //! canal acotado para que la captura nunca acumule latencia si el codificador
 //! se retrasa.
 
 use pipewire as pw;
-use pw::prelude::*;
-use pw::{properties, spa};
-use std::os::fd::AsRawFd;
+use pw::{properties::properties, spa};
 use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -108,9 +106,9 @@ fn run_i420(
     stop_rx: pw::channel::Receiver<()>,
 ) -> Result<(), PipeWireCaptureError> {
     pw::init();
-    let main_loop = pw::MainLoop::new()?;
-    let context = pw::Context::new(&main_loop)?;
-    let core = context.connect_fd(fd.as_raw_fd(), None)?;
+    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::Context::new(&main_loop)?;
+    let core = context.connect_fd(fd, None)?;
     let stream = pw::stream::Stream::new(
         &core,
         "crossscreen-screen-capture",
@@ -175,7 +173,7 @@ fn run_i420(
             let c_len = width as usize / 2 * half_height;
             let (y, u, v, strides) = if buffer.datas_mut().len() >= 3 {
                 let planes = buffer.datas_mut();
-                let copy_plane = |plane: &mut spa::data::Data| {
+                let copy_plane = |plane: &mut spa::buffer::Data| {
                     let size = plane.chunk().size() as usize;
                     plane
                         .data()
@@ -267,9 +265,10 @@ fn run_i420(
     .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?
     .0
     .into_inner();
-    let mut params = [values.as_ptr() as *const libspa_sys::spa_pod];
+    let mut params = [spa::pod::Pod::from_bytes(&values)
+        .map_err(|e| PipeWireCaptureError::Format(e.to_string()))?];
     stream.connect(
-        spa::Direction::Input,
+        spa::utils::Direction::Input,
         Some(node_id),
         pw::stream::StreamFlags::AUTOCONNECT
             | pw::stream::StreamFlags::MAP_BUFFERS
@@ -277,7 +276,7 @@ fn run_i420(
         &mut params,
     )?;
     let stop_loop = main_loop.clone();
-    let _stop_listener = stop_rx.attach(main_loop.as_ref(), move |_| stop_loop.quit());
+    let _stop_listener = stop_rx.attach(main_loop.loop_(), move |_| stop_loop.quit());
     let _stream = stream;
     let _listener = _listener;
     main_loop.run();
