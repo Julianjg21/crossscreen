@@ -24,8 +24,8 @@ anyhow.workspace = true
 bytes.workspace = true
 clap.workspace = true
 tokio.workspace = true
+cs-log.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 directories = "5"
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 png = "0.17"

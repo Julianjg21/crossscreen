@@ -12,23 +12,23 @@ Tu PC con Windows (PC-A) **extiende su escritorio** y el equipo Linux (PC-B) lo 
 | Portapapeles en Linux | ❌ pendiente: el visor avisa y sigue sin él |
 | Linux como fuente (duplicar el escritorio hacia Windows) | 🟡 experimental: GNOME Wayland con Portal/PipeWire; modo `extend` pendiente |
 
-## Linux como fuente experimental
+## Linux como fuente: Ubuntu → Windows (experimental)
 
-La fuente Linux actual solo duplica el monitor elegido en el diálogo de GNOME.
-El receptor Windows debe estar escuchando y ambos equipos deben estar
-emparejados. En Ubuntu GNOME con PipeWire instalado:
+Ubuntu **duplica** la pantalla que elijas en el diálogo de GNOME (aún no crea una pantalla extra). Requisitos: los dos equipos emparejados y OpenH264 instalado en Ubuntu (`./fetch-openh264.sh`, ver paso 3; con el `.deb` está en `/usr/lib/CrossScreen/fetch-openh264.sh`).
 
-```bash
-crossscreen stream <IP_DEL_WINDOWS>:47810 --peer <HUELLA_DEL_WINDOWS> --mode duplicate
-```
+1. **En Windows (receptor):** en el panel, «Recibir pantalla»; o por consola `crossscreen-viewer.exe --listen 0.0.0.0:47810`.
+   **La primera vez que ese PC recibe**, Windows muestra el aviso del firewall para `crossscreen-viewer`: pulsa **Permitir** (redes privadas). Si lo bloqueas, Ubuntu no podrá conectar («no se pudo conectar… comprueba el firewall»).
+2. **En Ubuntu (emisor):** en el panel, «Transmitir pantalla» → el equipo Windows → «Iniciar transmisión»; o por consola:
+   ```bash
+   ./crossscreen stream <IP_DEL_WINDOWS>:47810 --peer <HUELLA_DEL_WINDOWS>
+   ```
+3. GNOME abre su diálogo: elige la pantalla y pulsa **Compartir**. Tienes hasta 2 minutos; la conexión con Windows se abre **después** de aceptar, así que no hay prisa.
+4. Para terminar: «Detener transmisión» en el panel, Ctrl+C en la consola, cerrar la ventana del visor en Windows o «Dejar de compartir» en la barra superior de GNOME. Al terminar, GNOME apaga su indicador de pantalla compartida.
 
-Al iniciar se debe aceptar la autorización de captura del portal. El binario
-Linux necesita también `libopenh264-2.6.0-linux64.8.so`, instalado mediante
-`fetch-openh264.sh` como en el modo receptor. Esta ruta es experimental: todavía
-no se ha validado en hardware real desde este repositorio y no incluye `extend`,
-portapapeles ni inyección de entrada Linux.
-
-Validado también en un Ubuntu real con el flujo Windows → Ubuntu completo. La prueba confirma que el receptor funciona fuera de WSL2; las métricas detalladas de GPU, sesión gráfica y latencia quedan pendientes de documentar por separado.
+Cómo funciona y qué falta:
+- Con la pantalla quieta GNOME no envía imágenes nuevas; CrossScreen reenvía la última una vez por segundo, así que la imagen aparece al instante aunque nada se mueva.
+- Codificación por CPU (OpenH264): en las pruebas, ~10 ms por frame a 1080p.
+- Aún no: ratón y teclado desde Windows hacia Ubuntu, portapapeles, ni pantalla extendida.
 
 ## 1. Requisitos (Ubuntu 24.04, x86_64)
 Ubuntu Desktop ya trae casi todo. Si falta algo:
@@ -85,6 +85,15 @@ Al terminar, el visor imprime un resumen. Mándamelo, junto con:
 - lo que viste: fluidez, saltos, si el ratón y el teclado respondían bien.
 
 Las líneas clave del resumen son "espera en cola antes de decodificar", "decode (OpenH264, CPU)", "reensamblado→Present" y "saltados por retraso en cola". Si la CPU no da abasto, el visor salta frames en vez de acumular retraso; el contador lo indica.
+
+## Registros (logs) para diagnosticar
+
+Cada programa (panel, agente, visor y `crossscreen`) guarda un archivo por ejecución en:
+
+- **Linux:** `~/.local/state/crossscreen/logs/`
+- **Windows:** `%LOCALAPPDATA%\CrossScreen\logs\`
+
+Los nombres son `<programa>-<fecha UTC>-<pid>.log` (p. ej. `viewer-20261109-042150-24812.log`). Se guardan los 10 últimos de cada programa. En el panel, el botón **«Abrir carpeta de registros»** abre esa carpeta. Si algo falla, mándame los últimos `viewer-*`, `agent-*` y `cli-*` **de los dos equipos**.
 
 ## Problemas frecuentes
 | Síntoma | Causa probable | Solución |

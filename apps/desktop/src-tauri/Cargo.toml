@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 cs-ipc.workspace = true
+cs-log.workspace = true
+tracing.workspace = true
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json = "1"

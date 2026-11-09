@@ -75,24 +75,6 @@ fn default_name() -> String {
         .unwrap_or_else(|_| "CrossScreen".into())
 }
 
-fn init_logging(dir: &std::path::Path, filter: &str) -> Result<PathBuf> {
-    let path = dir.join("agent.log");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("abriendo el registro {}", path.display()))?;
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(filter)
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_ansi(false)
-        .with_writer(std::sync::Mutex::new(file))
-        .init();
-    Ok(path)
-}
-
 async fn run(args: Args) -> Result<i32> {
     let dir = match args.data_dir {
         Some(d) => d,
@@ -103,7 +85,7 @@ async fn run(args: Args) -> Result<i32> {
     };
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creando el directorio de datos {}", dir.display()))?;
-    let log_file = init_logging(&dir, &args.log)?;
+    let log_file = cs_log::init_file_only("agent", &args.log);
 
     let ep = Endpoint::default_for_user().context("determinando el punto IPC")?;
     // Primero el punto IPC: garantiza la instancia única antes de tocar nada más.
@@ -120,7 +102,7 @@ async fn run(args: Args) -> Result<i32> {
     };
 
     let name = args.name.unwrap_or_else(default_name);
-    let agent = agent::Agent::start(dir.clone(), name, Some(log_file.clone()))?;
+    let agent = agent::Agent::start(dir.clone(), name, log_file.clone())?;
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         endpoint = %ep,
@@ -128,7 +110,10 @@ async fn run(args: Args) -> Result<i32> {
         "agente iniciado"
     );
     println!("Agente de CrossScreen en ejecución. IPC: {ep}");
-    println!("Registro: {}", log_file.display());
+    match &log_file {
+        Some(p) => println!("Registro: {}", p.display()),
+        None => println!("Registro: no disponible (no se pudo crear el archivo)"),
+    }
 
     let accept_loop = {
         let agent = agent.clone();

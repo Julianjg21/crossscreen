@@ -911,6 +911,7 @@ dependencies = [
  "cs-discovery",
  "cs-display",
  "cs-ipc",
+ "cs-log",
  "cs-pipeline",
  "cs-protocol",
  "cs-security",
@@ -919,7 +920,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -932,6 +932,7 @@ dependencies = [
  "cs-core",
  "cs-discovery",
  "cs-display",
+ "cs-log",
  "cs-pipeline",
  "cs-protocol",
  "cs-security",
@@ -941,7 +942,6 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -949,11 +949,13 @@ name = "crossscreen-desktop"
 version = "0.0.1"
 dependencies = [
  "cs-ipc",
+ "cs-log",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -980,6 +982,7 @@ dependencies = [
  "cs-core",
  "cs-decode",
  "cs-discovery",
+ "cs-log",
  "cs-protocol",
  "cs-render",
  "cs-security",
@@ -988,7 +991,6 @@ dependencies = [
  "png 0.17.16",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "windows 0.58.0",
  "winit",
 ]
@@ -1014,6 +1016,7 @@ name = "cs-capture"
 version = "0.0.1"
 dependencies = [
  "ashpd",
+ "futures-util",
  "libspa",
  "libspa-sys",
  "pipewire",
@@ -1110,6 +1113,14 @@ dependencies = [
  "tokio",
  "tracing",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "cs-log"
+version = "0.0.1"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

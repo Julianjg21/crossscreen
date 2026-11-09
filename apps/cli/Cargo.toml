@@ -22,8 +22,8 @@ cs-pipeline = { path = "../../crates/cs-pipeline" }
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["signal"] }
+cs-log.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 serde.workspace = true
 bytes.workspace = true
 quinn.workspace = true

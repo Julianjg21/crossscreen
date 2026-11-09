@@ -129,8 +129,8 @@ fn packed_order(format: VideoFormat) -> Option<PackedRgb> {
     }
 }
 
-/// Copia el contenido válido (`offset..offset+size`) de un plano y su stride.
-fn plane_bytes(data: &mut spa::data::Data, default_stride: usize) -> Option<(Vec<u8>, usize)> {
+/// Contenido válido (`offset..offset+size`) de un plano, sin copiar, y su stride.
+fn plane_slice(data: &mut spa::data::Data, default_stride: usize) -> Option<(&[u8], usize)> {
     let chunk = data.chunk();
     let (offset, size, stride) = (
         chunk.offset() as usize,
@@ -144,7 +144,23 @@ fn plane_bytes(data: &mut spa::data::Data, default_stride: usize) -> Option<(Vec
     };
     let slice = data.data()?;
     let end = offset.checked_add(size)?.min(slice.len());
-    (offset < end).then(|| (slice[offset..end].to_vec(), stride))
+    (offset < end).then(|| (&slice[offset..end], stride))
+}
+
+/// Como [`plane_slice`], pero copiando el plano.
+fn plane_bytes(data: &mut spa::data::Data, default_stride: usize) -> Option<(Vec<u8>, usize)> {
+    plane_slice(data, default_stride).map(|(s, stride)| (s.to_vec(), stride))
+}
+
+/// ¿El cambio de estado significa que el stream terminó? `Unconnected` es
+/// también el estado inicial, así que solo cuenta si se viene de otro.
+fn stream_ended(old: &pw::stream::StreamState, new: &pw::stream::StreamState) -> bool {
+    use pw::stream::StreamState;
+    match new {
+        StreamState::Error(_) => true,
+        StreamState::Unconnected => !matches!(old, StreamState::Unconnected),
+        _ => false,
+    }
 }
 
 /// ¿Caben `rows` filas de `width` bytes con este `stride` en `len` bytes?
@@ -162,8 +178,9 @@ fn to_i420(datas: &mut [spa::data::Data], n: Negotiated) -> Option<I420Buffer> {
     let (w, h) = (n.width as usize, n.height as usize);
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
     if let Some(order) = packed_order(n.format) {
-        let (bytes, stride) = plane_bytes(datas.first_mut()?, w * 4)?;
-        let p = packed_to_i420(&bytes, stride, n.width, n.height, order)?;
+        // Se convierte directamente desde la memoria mapeada (sin copia previa).
+        let (bytes, stride) = plane_slice(datas.first_mut()?, w * 4)?;
+        let p = packed_to_i420(bytes, stride, n.width, n.height, order)?;
         return Some(I420Buffer {
             width: n.width,
             height: n.height,
@@ -233,8 +250,19 @@ fn run_i420(
     )?;
     let negotiated = Arc::new(Mutex::new(None::<Negotiated>));
     let negotiated_for_params = Arc::clone(&negotiated);
+    // Si el compositor cierra el stream (p. ej. «Dejar de compartir» en
+    // GNOME) o PipeWire informa de un error, se sale del bucle: al soltar
+    // `tx` el consumidor ve el canal cerrado y la sesión termina con causa.
+    let quit_on_end = main_loop.clone();
     let listener = stream
         .add_local_listener_with_user_data(())
+        .state_changed(move |old, new| {
+            tracing::info!("PipeWire: estado {old:?} → {new:?}");
+            if stream_ended(&old, &new) {
+                tracing::warn!("PipeWire: el stream terminó ({new:?})");
+                quit_on_end.quit();
+            }
+        })
         .param_changed(move |_, id, _, param| {
             if id != pw::spa::param::ParamType::Format.as_raw() {
                 return;
@@ -354,7 +382,11 @@ fn run_i420(
         Some(node_id),
         // Sin RT_PROCESS: la conversión a I420 corre en este hilo, no en el
         // hilo de tiempo real de PipeWire.
-        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+        // DONT_RECONNECT: si la fuente desaparece (p. ej. «Dejar de compartir»)
+        // el stream pasa a desconectado en vez de esperar otra fuente.
+        pw::stream::StreamFlags::AUTOCONNECT
+            | pw::stream::StreamFlags::MAP_BUFFERS
+            | pw::stream::StreamFlags::DONT_RECONNECT,
         &mut params,
     )?;
     let stop_loop = main_loop.clone();
@@ -369,7 +401,29 @@ fn run_i420(
 
 #[cfg(test)]
 mod tests {
-    use super::plane_fits;
+    use super::{plane_fits, stream_ended};
+    use pipewire::stream::StreamState;
+
+    #[test]
+    fn stream_end_detection() {
+        assert!(!stream_ended(
+            &StreamState::Unconnected,
+            &StreamState::Unconnected
+        ));
+        assert!(!stream_ended(
+            &StreamState::Unconnected,
+            &StreamState::Connecting
+        ));
+        assert!(!stream_ended(&StreamState::Paused, &StreamState::Streaming));
+        assert!(stream_ended(
+            &StreamState::Streaming,
+            &StreamState::Unconnected
+        ));
+        assert!(stream_ended(
+            &StreamState::Paused,
+            &StreamState::Error("x".into())
+        ));
+    }
 
     #[test]
     fn plane_bounds() {

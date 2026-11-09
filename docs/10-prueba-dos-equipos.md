@@ -105,6 +105,15 @@ Al terminar, **cada lado imprime un resumen**. Cópialo de los dos equipos, indi
 .\crossscreen.exe bench 192.168.1.50:47800 --peer <prefijo> --mbps 50 --seconds 10
 ```
 
+## Registros (logs) para diagnosticar
+
+Cada programa de CrossScreen (panel, agente, visor y `crossscreen`) guarda un archivo por ejecución en:
+
+- **Linux:** `~/.local/state/crossscreen/logs/`
+- **Windows:** `%LOCALAPPDATA%\CrossScreen\logs\`
+
+Los nombres son `<programa>-<fecha UTC>-<pid>.log` (p. ej. `viewer-20261109-042150-24812.log`). Se guardan los 10 últimos de cada programa. En el panel, el botón **«Abrir carpeta de registros»** abre esa carpeta. Si algo falla, mándame los últimos `viewer-*`, `agent-*` y `cli-*` **de los dos equipos**.
+
 ## Problemas frecuentes
 | Síntoma | Causa probable | Solución |
 |---|---|---|

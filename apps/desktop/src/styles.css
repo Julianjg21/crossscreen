@@ -131,6 +131,12 @@ nav ul {
   cursor: default;
 }
 
+.logs-link {
+  align-self: flex-start;
+  margin: 0 6px 8px;
+  font-size: 0.8rem;
+}
+
 .agent-status {
   margin-top: auto;
   padding: 10px 12px;

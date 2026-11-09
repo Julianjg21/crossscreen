@@ -185,7 +185,7 @@ export type AgentEvent =
   | { kind: "receiver_ended"; message: string | null };
 
 export interface CmdError {
-  kind: "agent_unavailable" | "agent_error" | "protocol";
+  kind: "agent_unavailable" | "agent_error" | "protocol" | "local_error";
   code: string | null;
   message: string;
 }
@@ -211,6 +211,9 @@ export const agent = {
   start: () => invoke<AgentInfo>("start_agent"),
   request: (request: Request) => invoke<Response>("agent_request", { request }),
 };
+
+/** Abre la carpeta de registros en el explorador; devuelve su ruta. */
+export const openLogsDir = () => invoke<string>("open_logs_dir");
 
 /** Petición que espera un tipo de respuesta concreto. */
 export async function call<K extends Response["kind"]>(

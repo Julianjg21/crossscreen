@@ -136,7 +136,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         wait_for_stop_signal().await;
-        eprintln!("Parando… (retirando el monitor virtual)");
+        cs_log::err_out!("Parando… (retirando el monitor virtual)");
         let _ = stop_tx.send(true);
     });
 
@@ -153,19 +153,29 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
         peer,
         grace: Duration::from_secs_f64(a.reconnect_grace),
     });
+    // Linux: diálogo del sistema para elegir la pantalla, antes de conectar
+    // (así no consume los temporizadores del receptor).
+    #[cfg(not(windows))]
+    cs_log::out!("Elige la pantalla en el diálogo del sistema…");
+    let source = cs_pipeline::prepare_source(&cfg).await?;
     let conn = endpoint
         .connect(a.addr, PeerPolicy::Exactly(peer), ALPN)
         .await
-        .with_context(|| format!("conectando al receptor {}", a.addr))?;
-    println!(
+        .with_context(|| {
+            format!(
+                "no se pudo conectar con el receptor {}. Comprueba que esté escuchando (crossscreen-viewer --listen, o «Recibir pantalla» en el panel) y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)",
+                a.addr
+            )
+        })?;
+    cs_log::out!(
         "Conectado a {} ({}) — RTT {:?}, datagrama máx. {:?} B",
         conn.remote_addr(),
         conn.peer_fingerprint().short(),
         conn.rtt(),
         conn.max_datagram_size()
     );
-    let report = cs_pipeline::run_sender(conn, cfg, stop_rx).await?;
-    println!("{report}");
+    let report = cs_pipeline::run_sender(conn, cfg, source, stop_rx).await?;
+    cs_log::out!("{report}");
     endpoint.close();
     if let Some(e) = &report.worker.fatal {
         bail!("la sesión terminó por un fallo de captura/codificación: {e}");

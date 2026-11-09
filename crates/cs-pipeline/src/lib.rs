@@ -129,21 +129,62 @@ impl SenderConfig {
 /// El monitor virtual se retira **siempre** antes de volver (también con
 /// error). Devuelve el informe de métricas; un fallo de captura o
 /// codificación a mitad de sesión se refleja en `report.worker.fatal`.
+///
+/// `source` sale de [`prepare_source`], que debe llamarse **antes** de
+/// conectar con el receptor.
 #[cfg(windows)]
 pub async fn run_sender(
     conn: cs_transport::Connection,
     cfg: SenderConfig,
+    source: PreparedSource,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<SenderReport> {
+    let PreparedSource {} = source;
     session::run(conn, cfg, shutdown).await
 }
 
-/// Sin backend de captura/codificación fuera de Windows (todavía).
+/// Linux: duplica la pantalla elegida en el diálogo del sistema (Portal +
+/// PipeWire + OpenH264).
 #[cfg(not(windows))]
 pub async fn run_sender(
     conn: cs_transport::Connection,
     cfg: SenderConfig,
+    source: PreparedSource,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<SenderReport> {
-    linux::run(conn, cfg, shutdown).await
+    linux::run(conn, cfg, source.linux, shutdown).await
+}
+
+/// Fuente de vídeo preparada antes de conectar con el receptor.
+///
+/// En Linux contiene la captura ya autorizada por el usuario (diálogo del
+/// sistema) y con su primer frame: así el diálogo no consume los
+/// temporizadores del receptor. En Windows no hace falta preparar nada.
+pub struct PreparedSource {
+    #[cfg(not(windows))]
+    linux: linux::Prepared,
+}
+
+impl std::fmt::Debug for PreparedSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PreparedSource")
+    }
+}
+
+/// Prepara la fuente de vídeo. Llamar antes de conectar con el receptor y
+/// pasar el resultado a [`run_sender`]. En Linux muestra el diálogo del
+/// sistema para elegir la pantalla y puede tardar lo que tarde el usuario
+/// (máximo 2 min).
+pub async fn prepare_source(cfg: &SenderConfig) -> anyhow::Result<PreparedSource> {
+    #[cfg(windows)]
+    {
+        let _ = cfg;
+        Ok(PreparedSource {})
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(PreparedSource {
+            linux: linux::prepare(cfg).await?,
+        })
+    }
 }

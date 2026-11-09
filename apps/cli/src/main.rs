@@ -118,11 +118,13 @@ impl Ctx {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .init();
+    if let Some(path) = cs_log::init("cli", "warn") {
+        tracing::debug!("registro: {}", path.display());
+    }
+    cs_log::finish(run().await)
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     let dir = match cli.data_dir {
         Some(d) => d,
@@ -183,11 +185,11 @@ fn default_name() -> String {
 fn cmd_id(ctx: &Ctx) -> Result<()> {
     let id = ctx.identity()?;
     let fp = id.fingerprint();
-    println!("Nombre:      {}", ctx.name);
-    println!("Device ID:   {}", fp.device_id());
-    println!("Huella:      {fp}");
-    println!("Huella corta {}", fp.short());
-    println!("Datos en:    {}", ctx.dir.display());
+    cs_log::out!("Nombre:      {}", ctx.name);
+    cs_log::out!("Device ID:   {}", fp.device_id());
+    cs_log::out!("Huella:      {fp}");
+    cs_log::out!("Huella corta {}", fp.short());
+    cs_log::out!("Datos en:    {}", ctx.dir.display());
     Ok(())
 }
 
@@ -196,7 +198,7 @@ fn cmd_peers(ctx: &Ctx) -> Result<()> {
     let mut any = false;
     for p in trust.peers() {
         any = true;
-        println!(
+        cs_log::out!(
             "{}  {}  (emparejado: {})",
             p.fingerprint.short(),
             p.name,
@@ -204,7 +206,7 @@ fn cmd_peers(ctx: &Ctx) -> Result<()> {
         );
     }
     if !any {
-        println!("No hay equipos emparejados.");
+        cs_log::out!("No hay equipos emparejados.");
     }
     Ok(())
 }
@@ -227,7 +229,7 @@ fn cmd_forget(ctx: &Ctx, prefix: &str) -> Result<()> {
     let mut trust = ctx.trust()?;
     let fp = resolve_peer(&trust, prefix)?;
     trust.remove(&fp)?;
-    println!("Olvidado {}", fp.short());
+    cs_log::out!("Olvidado {}", fp.short());
     Ok(())
 }
 
@@ -258,15 +260,17 @@ async fn cmd_pair_listen(ctx: &Ctx, bind: SocketAddr, mdns: bool) -> Result<()> 
     };
 
     let pin = Pin::generate();
-    println!("Escuchando emparejamiento en el puerto UDP {port}");
+    cs_log::out!("Escuchando emparejamiento en el puerto UDP {port}");
     println!();
+    // El PIN solo va a la consola, nunca al registro (los registros se comparten).
     println!("    PIN:  {} {}", &pin.as_str()[..3], &pin.as_str()[3..]);
     println!();
     println!(
         "En el otro equipo: crossscreen pair <esta-ip>:{port} {}",
         pin.as_str()
     );
-    println!("Mi huella: {}", identity.fingerprint().short());
+    tracing::info!("PIN de emparejamiento mostrado en consola (no se registra)");
+    cs_log::out!("Mi huella: {}", identity.fingerprint().short());
 
     let mut limiter = AttemptLimiter::default();
     let peer = tokio::time::timeout(
@@ -276,7 +280,7 @@ async fn cmd_pair_listen(ctx: &Ctx, bind: SocketAddr, mdns: bool) -> Result<()> 
     .await
     .context("el PIN caducó (2 minutos)")??;
     trust.add(peer.fingerprint, &peer.name)?;
-    println!(
+    cs_log::out!(
         "Emparejado con '{}' ({})",
         peer.name,
         peer.fingerprint.short()
@@ -298,12 +302,12 @@ async fn cmd_pair(ctx: &Ctx, addr: SocketAddr, pin: &str) -> Result<()> {
     let endpoint = Endpoint::client(bind, identity)?;
     let peer = pair_as_initiator(&endpoint, addr, &pin, &ctx.name).await?;
     trust.add(peer.fingerprint, &peer.name)?;
-    println!(
+    cs_log::out!(
         "Emparejado con '{}' ({})",
         peer.name,
         peer.fingerprint.short()
     );
-    println!("Compara esta huella con la que muestra el otro equipo.");
+    cs_log::out!("Compara esta huella con la que muestra el otro equipo.");
     Ok(())
 }
 
@@ -312,7 +316,7 @@ async fn cmd_discover(ctx: &Ctx, seconds: u64) -> Result<()> {
     let trust = ctx.trust()?;
     let discovery = Discovery::new()?;
     let mut browser = discovery.browse(Some(own))?;
-    println!("Buscando equipos durante {seconds} s…");
+    cs_log::out!("Buscando equipos durante {seconds} s…");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
     let mut found = 0;
     while let Ok(Some(ev)) = tokio::time::timeout_at(deadline, browser.next()).await {
@@ -322,7 +326,7 @@ async fn cmd_discover(ctx: &Ctx, seconds: u64) -> Result<()> {
                 .fingerprints()
                 .iter()
                 .any(|fp| fp.device_id() == p.device_id);
-            println!(
+            cs_log::out!(
                 "- {} [{}] v{} roles={} sesión={} emparejamiento={} {:?}{}",
                 p.name,
                 p.device_id,
@@ -336,7 +340,7 @@ async fn cmd_discover(ctx: &Ctx, seconds: u64) -> Result<()> {
         }
     }
     if found == 0 {
-        println!("No se encontró ningún equipo (¿multicast bloqueado por firewall o aislamiento del AP?).");
+        cs_log::out!("No se encontró ningún equipo (¿multicast bloqueado por firewall o aislamiento del AP?).");
     }
     Ok(())
 }

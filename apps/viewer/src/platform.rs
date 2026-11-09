@@ -57,7 +57,7 @@ pub fn create_renderer(
     options: RendererOptions,
 ) -> Result<Renderer> {
     let r = Renderer::new(window.clone(), width, height, options)?;
-    println!("renderizador: {}", r.adapter_info());
+    cs_log::out!("renderizador: {}", r.adapter_info());
     Ok(r)
 }
 

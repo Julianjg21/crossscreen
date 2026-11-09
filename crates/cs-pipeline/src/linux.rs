@@ -1,16 +1,26 @@
 //! Emisor Linux: XDG Desktop Portal → PipeWire → OpenH264 → QUIC.
 //!
-//! Esta primera implementación duplica el monitor seleccionado por Portal.
-//! No crea una pantalla virtual Linux, por lo que `extend` se rechaza
-//! explícitamente.
+//! Duplica el monitor que el usuario elige en el diálogo del sistema (no
+//! crea una pantalla virtual: `extend` se trata como `duplicate`).
+//!
+//! Se hace en dos pasos para que el diálogo nunca choque con los
+//! temporizadores del receptor (10 s para el canal de control y para
+//! `StartStream`):
+//! 1. [`prepare`], **antes de conectar**: comprueba OpenH264, abre el diálogo
+//!    del portal, arranca la captura y espera el primer frame (tamaño real).
+//! 2. [`run`]: handshake, `StartStream` y transmisión.
+//!
+//! Siempre se libera todo al terminar (también con error): hilo de
+//! captura/codificación, PipeWire y la sesión del portal (si no se cierra,
+//! GNOME mantiene el indicador de "compartiendo pantalla").
 
-use crate::stats::{SenderReport, WorkerStats};
+use crate::stats::{ControlStats, SenderReport, WorkerStats};
 use crate::timing::wire_pts;
 use crate::{SenderConfig, STREAM_ID};
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use cs_capture::linux_pipewire::I420Buffer;
-use cs_capture::linux_portal::PortalCaptureSession;
+use cs_capture::linux_portal::{describe_error, PortalCaptureSession, PortalSession};
 use cs_core::{Codec, Mode, Roles, StreamMode};
 use cs_encode::openh264_backend::{I420Frame, OpenH264Encoder};
 use cs_encode::{EncodeControl, EncoderConfig, VideoEncoder};
@@ -19,14 +29,29 @@ use cs_protocol::PROTOCOL_VERSION;
 use cs_transport::pacer::{self, PacedSendOptions, Pacer, PacerConfig};
 use cs_transport::packetizer::FrameMeta;
 use cs_transport::{Connection, FramedStream, Packetizer, PacketizerConfig};
+use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const START_TIMEOUT: Duration = Duration::from_secs(15);
+/// Tiempo para responder al diálogo de compartir pantalla (la petición IPC
+/// del panel espera hasta 180 s).
+const PORTAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Espera máxima al primer frame de PipeWire (tamaño real de la captura).
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+/// Intervalo mínimo entre dos IDR forzados por `RequestKeyframe`.
+const MIN_IDR_INTERVAL: Duration = Duration::from_millis(250);
+/// Con la pantalla quieta el compositor no entrega frames: se vuelve a
+/// codificar el último con esta cadencia (latido para el receptor y para
+/// que un IDR pedido salga aunque nada cambie).
+const IDLE_REPEAT: Duration = Duration::from_secs(1);
+/// Diagnóstico: consumir este nodo del PipeWire local sin pasar por el
+/// portal (pruebas sin GNOME, p. ej. con una fuente de vídeo sintética).
+pub const TEST_NODE_ENV: &str = "CROSSSCREEN_TEST_PIPEWIRE_NODE";
 
 struct LinuxUnit {
     data: Vec<u8>,
@@ -34,8 +59,18 @@ struct LinuxUnit {
     pts_us: u64,
 }
 
+/// Estado compartido entre la sesión (async) y el hilo de codificación.
+struct Shared {
+    /// Hasta que el receptor confirma `StreamStarted` no se codifica: los
+    /// frames solo sirven para conocer el tamaño real de la captura.
+    streaming: AtomicBool,
+    /// El próximo frame debe salir como IDR.
+    force_idr: AtomicBool,
+    stop: AtomicBool,
+}
+
 struct LinuxWorker {
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     join: Option<std::thread::JoinHandle<WorkerStats>>,
     capture_control: Option<cs_capture::linux_pipewire::PipeWireCaptureControl>,
 }
@@ -43,106 +78,162 @@ struct LinuxWorker {
 impl LinuxWorker {
     fn start(
         node_id: u32,
-        fd: std::os::fd::OwnedFd,
+        fd: OwnedFd,
         cfg: &SenderConfig,
         tx: tokio_mpsc::Sender<LinuxUnit>,
+        size_tx: watch::Sender<Option<(u32, u32)>>,
     ) -> Result<Self> {
         let capture = cs_capture::linux_pipewire::start_i420(node_id, fd)
             .context("iniciando el stream PipeWire")?;
         let (frames, capture_control) = capture.into_parts();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
+        let shared = Arc::new(Shared {
+            streaming: AtomicBool::new(false),
+            force_idr: AtomicBool::new(true),
+            stop: AtomicBool::new(false),
+        });
+        let thread_shared = Arc::clone(&shared);
         let bitrate = cfg.bitrate_kbps;
         let join = std::thread::Builder::new()
             .name("crossscreen-linux-capture-encode".into())
-            .spawn(move || encode_loop(frames, stop_thread, bitrate, tx))
+            .spawn(move || encode_loop(frames, thread_shared, bitrate, tx, size_tx))
             .context("creando el hilo Linux de captura")?;
         Ok(Self {
-            stop,
+            shared,
             join: Some(join),
             capture_control: Some(capture_control),
         })
     }
 
+    fn finished(&self) -> bool {
+        self.join.as_ref().is_none_or(|j| j.is_finished())
+    }
+
     async fn stop(mut self) -> WorkerStats {
-        self.stop.store(true, Ordering::Relaxed);
-        let worker = self.join.take().map(|join| {
-            tokio::task::spawn_blocking(move || {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        let result = match self.join.take() {
+            Some(join) => tokio::task::spawn_blocking(move || {
                 join.join().unwrap_or_else(|_| WorkerStats {
                     fatal: Some("el hilo Linux de captura terminó con pánico".into()),
                     ..WorkerStats::default()
                 })
             })
-        });
-        let stats = worker.map(|task| async move {
-            task.await.unwrap_or_else(|_| WorkerStats {
+            .await
+            .unwrap_or_else(|_| WorkerStats {
                 fatal: Some("no se pudo esperar al hilo Linux de captura".into()),
                 ..WorkerStats::default()
-            })
-        });
-        let result = match stats {
-            Some(task) => task.await,
+            }),
             None => WorkerStats::default(),
         };
         if let Some(control) = self.capture_control.take() {
-            control.stop();
+            // Detener PipeWire bloquea brevemente (join de su hilo).
+            let _ = tokio::task::spawn_blocking(move || control.stop()).await;
         }
         result
     }
 }
 
+/// Bucle del hilo de codificación: recibe frames I420 de PipeWire, los
+/// codifica con OpenH264 cuando la sesión ya transmite y repite el último
+/// frame si la pantalla está quieta.
 fn encode_loop(
     frames: mpsc::Receiver<I420Buffer>,
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     bitrate_kbps: u32,
     tx: tokio_mpsc::Sender<LinuxUnit>,
+    size_tx: watch::Sender<Option<(u32, u32)>>,
 ) -> WorkerStats {
     let mut stats = WorkerStats::default();
     let mut encoder: Option<(OpenH264Encoder, (u32, u32))> = None;
-    let mut force_idr = true;
-    let mut next_pts_us = 0u64;
-    while !stop.load(Ordering::Relaxed) {
-        let Ok(buffer) = frames.recv_timeout(Duration::from_millis(100)) else {
-            continue;
+    let mut last_frame: Option<I420Frame> = None;
+    let mut last_encode = Instant::now();
+    let mut epoch: Option<Instant> = None;
+    while !shared.stop.load(Ordering::Relaxed) {
+        let frame = match frames.recv_timeout(Duration::from_millis(100)) {
+            Ok(buffer) => {
+                stats.captured += 1;
+                // H.264 4:2:0 necesita dimensiones pares: con escalado
+                // fraccional la captura puede ser impar; se recorta 1 px (el
+                // stride no cambia).
+                let (width, height) = (buffer.width & !1, buffer.height & !1);
+                if width == 0 || height == 0 {
+                    continue;
+                }
+                stats.last_size = Some((width, height));
+                size_tx.send_if_modified(|old| {
+                    let changed = *old != Some((width, height));
+                    *old = Some((width, height));
+                    changed
+                });
+                let frame = match I420Frame::new(
+                    width,
+                    height,
+                    buffer.y,
+                    buffer.u,
+                    buffer.v,
+                    buffer.strides,
+                ) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        stats.encoder_errors += 1;
+                        tracing::warn!("frame I420 inválido: {error}");
+                        continue;
+                    }
+                };
+                if !shared.streaming.load(Ordering::Relaxed) {
+                    // Aún no se transmite: guardar el más reciente. Con la
+                    // pantalla quieta (GNOME solo envía frames cuando algo
+                    // cambia) será el primero que se codifique, como IDR.
+                    last_frame = Some(frame);
+                    continue;
+                }
+                frame
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // Pantalla quieta: repetir el último frame si hace falta un
+                // IDR o como latido.
+                let due = shared.force_idr.load(Ordering::Relaxed)
+                    || last_encode.elapsed() >= IDLE_REPEAT;
+                match last_frame.take() {
+                    Some(frame) if due && shared.streaming.load(Ordering::Relaxed) => {
+                        stats.repeats += 1;
+                        frame
+                    }
+                    other => {
+                        last_frame = other;
+                        continue;
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                // El hilo de PipeWire terminó: el usuario dejó de compartir
+                // o el compositor cerró el stream. No es un fallo.
+                tracing::info!("la captura de PipeWire terminó");
+                break;
+            }
         };
-        stats.captured += 1;
-        stats.last_size = Some((buffer.width, buffer.height));
-        if encoder
-            .as_ref()
-            .is_none_or(|(_, size)| *size != (buffer.width, buffer.height))
-        {
-            let config = EncoderConfig::desktop(buffer.width, buffer.height, 60, bitrate_kbps);
+        let size = (frame.width, frame.height);
+        if encoder.as_ref().is_none_or(|(_, s)| *s != size) {
+            let config = EncoderConfig::desktop(size.0, size.1, 60, bitrate_kbps);
             match OpenH264Encoder::from_default_path(&config) {
                 Ok(enc) => {
-                    encoder = Some((enc, (buffer.width, buffer.height)));
+                    tracing::info!("codificador OpenH264 creado: {}x{}", size.0, size.1);
+                    encoder = Some((enc, size));
                     stats.encoders_created += 1;
-                    force_idr = true;
+                    shared.force_idr.store(true, Ordering::Relaxed);
                 }
                 Err(error) => {
+                    tracing::error!("no se pudo crear el codificador OpenH264: {error}");
                     stats.fatal = Some(error.to_string());
                     break;
                 }
             }
         }
-        let frame = match I420Frame::new(
-            buffer.width,
-            buffer.height,
-            buffer.y,
-            buffer.u,
-            buffer.v,
-            buffer.strides,
-        ) {
-            Ok(frame) => frame,
-            Err(error) => {
-                stats.encoder_errors += 1;
-                tracing::warn!("frame I420 inválido: {error}");
-                continue;
-            }
-        };
-        let Some((encoder, _)) = encoder.as_mut() else {
+        let Some((enc, _)) = encoder.as_mut() else {
             continue;
         };
-        let units = match encoder.encode(
+        let force_idr = shared.force_idr.swap(false, Ordering::Relaxed);
+        stats.forced_idr += u64::from(force_idr);
+        let units = match enc.encode(
             &frame,
             EncodeControl {
                 force_idr,
@@ -153,10 +244,14 @@ fn encode_loop(
             Err(error) => {
                 stats.encoder_errors += 1;
                 tracing::warn!("fallo codificando OpenH264: {error}");
+                shared.force_idr.store(true, Ordering::Relaxed);
                 continue;
             }
         };
-        force_idr = false;
+        last_encode = Instant::now();
+        // Marca de tiempo real desde el primer frame transmitido.
+        let pts_us = epoch.get_or_insert(last_encode).elapsed().as_micros() as u64;
+        last_frame = Some(frame);
         for unit in units {
             stats.encoded += 1;
             stats.encode_us.push(unit.encode_time.as_micros() as f64);
@@ -169,13 +264,15 @@ fn encode_loop(
             let item = LinuxUnit {
                 data: unit.data,
                 keyframe: unit.keyframe,
-                pts_us: next_pts_us,
+                pts_us,
             };
-            next_pts_us = next_pts_us.saturating_add(16_667);
             match tx.try_send(item) {
                 Ok(()) => {}
                 Err(tokio_mpsc::error::TrySendError::Full(_)) => {
+                    // Un frame perdido rompe la cadena de referencias: el
+                    // siguiente debe ser IDR o el receptor no podrá decodificar.
                     stats.dropped_backpressure += 1;
+                    shared.force_idr.store(true, Ordering::Relaxed);
                 }
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => return stats,
             }
@@ -184,21 +281,216 @@ fn encode_loop(
     stats
 }
 
+/// Captura ya autorizada y en marcha, lista para transmitir.
+///
+/// Si se suelta sin pasar por [`run`] (p. ej. falla la conexión con el
+/// receptor), `Drop` detiene la captura y cierra la sesión del portal.
+pub(crate) struct Prepared {
+    portal: Option<PortalSession>,
+    worker: Option<LinuxWorker>,
+    video_rx: Option<tokio_mpsc::Receiver<LinuxUnit>>,
+    size_rx: watch::Receiver<Option<(u32, u32)>>,
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            // El hilo sale en ≤100 ms; soltar el control detiene PipeWire.
+            worker.shared.stop.store(true, Ordering::Relaxed);
+        }
+        if let Some(portal) = self.portal.take() {
+            match tokio::runtime::Handle::try_current() {
+                Ok(rt) => {
+                    rt.spawn(portal.close());
+                }
+                Err(_) => tracing::warn!("sesión del portal sin cerrar (sin runtime)"),
+            }
+        }
+    }
+}
+
+impl Prepared {
+    /// Libera todo: hilo de codificación, PipeWire y la sesión del portal.
+    async fn release(worker: LinuxWorker, portal: Option<PortalSession>) -> WorkerStats {
+        let stats = worker.stop().await;
+        if let Some(p) = portal {
+            p.close().await;
+        }
+        stats
+    }
+}
+
+/// Nodo de prueba de [`TEST_NODE_ENV`] y conexión al PipeWire local.
+fn test_source() -> Result<Option<(u32, OwnedFd)>> {
+    let Some(node) = std::env::var_os(TEST_NODE_ENV) else {
+        return Ok(None);
+    };
+    let node: u32 = node
+        .to_str()
+        .and_then(|s| s.parse().ok())
+        .with_context(|| format!("{TEST_NODE_ENV} debe ser un id de nodo"))?;
+    let socket = match std::env::var_os("PIPEWIRE_REMOTE") {
+        Some(path) => std::path::PathBuf::from(path),
+        None => std::path::PathBuf::from(
+            std::env::var_os("XDG_RUNTIME_DIR").context("falta XDG_RUNTIME_DIR")?,
+        )
+        .join("pipewire-0"),
+    };
+    let stream = std::os::unix::net::UnixStream::connect(&socket)
+        .with_context(|| format!("conectando con PipeWire en {}", socket.display()))?;
+    tracing::warn!("{TEST_NODE_ENV}={node}: se usa el nodo PipeWire local sin portal");
+    Ok(Some((node, stream.into())))
+}
+
+/// Paso 1 (antes de conectar con el receptor): comprueba el codificador, pide
+/// la pantalla al usuario y arranca la captura hasta tener el primer frame.
+pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
+    // OpenH264 primero: si falta, no tiene sentido mostrar el diálogo.
+    OpenH264Encoder::from_default_path(&EncoderConfig::desktop(640, 480, 60, 1000)).map_err(
+        |e| anyhow!("{e} (con el .deb el script está en /usr/lib/CrossScreen/fetch-openh264.sh)"),
+    )?;
+
+    let (node_id, fd, portal) = match test_source()? {
+        Some((node, fd)) => (node, fd, None),
+        None => {
+            tracing::info!("pidiendo la pantalla al XDG Desktop Portal (diálogo del sistema)");
+            let opened = tokio::time::timeout(PORTAL_TIMEOUT, PortalCaptureSession::open())
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "no se respondió al diálogo de compartir pantalla en {} s",
+                        PORTAL_TIMEOUT.as_secs()
+                    )
+                })?
+                .map_err(|e| anyhow!("{}", describe_error(&e)))?;
+            let PortalCaptureSession {
+                stream,
+                pipewire_fd,
+                session,
+            } = opened;
+            tracing::info!(
+                node = stream.node_id,
+                size = ?stream.size,
+                "el portal autorizó la captura"
+            );
+            (stream.node_id, pipewire_fd, Some(session))
+        }
+    };
+    let (video_tx, video_rx) = tokio_mpsc::channel(4);
+    let (size_tx, mut size_rx) = watch::channel(None);
+    let worker = match LinuxWorker::start(node_id, fd, cfg, video_tx, size_tx) {
+        Ok(w) => w,
+        Err(e) => {
+            if let Some(p) = portal {
+                p.close().await;
+            }
+            return Err(e);
+        }
+    };
+    let first = tokio::time::timeout(FIRST_FRAME_TIMEOUT, size_rx.wait_for(Option::is_some))
+        .await
+        .ok()
+        .and_then(|r| r.ok().and_then(|v| *v));
+    let Some((width, height)) = first else {
+        let stats = Prepared::release(worker, portal).await;
+        bail!(
+            "PipeWire no entregó ningún frame en {} s (capturados: {}){}",
+            FIRST_FRAME_TIMEOUT.as_secs(),
+            stats.captured,
+            stats.fatal.map(|f| format!("; {f}")).unwrap_or_default()
+        );
+    };
+    tracing::info!("captura lista: {width}x{height}");
+    Ok(Prepared {
+        portal,
+        worker: Some(worker),
+        video_rx: Some(video_rx),
+        size_rx,
+    })
+}
+
+/// Paso 2: sesión con el receptor sobre `conn` hasta que termine. Libera
+/// siempre la captura y el portal antes de volver.
 pub(crate) async fn run(
     conn: Connection,
     cfg: SenderConfig,
-    mut shutdown: watch::Receiver<bool>,
+    prepared: Prepared,
+    shutdown: watch::Receiver<bool>,
 ) -> Result<SenderReport> {
-    if cfg.mode != StreamMode::Duplicate {
-        bail!("Linux solo admite el modo duplicate; extend requiere una pantalla virtual Linux");
+    if cfg.mode == StreamMode::Extend {
+        tracing::warn!("Linux aún no crea pantallas virtuales: se duplica la pantalla elegida");
     }
     if cfg.accept_input {
-        tracing::info!("la entrada remota está desactivada en el emisor Linux experimental");
+        tracing::info!("la entrada remota aún no está disponible en el emisor Linux");
     }
     if cfg.clipboard {
-        tracing::info!("el portapapeles está desactivado en el emisor Linux experimental");
+        tracing::info!("el portapapeles aún no está disponible en el emisor Linux");
     }
     let started_at = Instant::now();
+    let mut prepared = prepared;
+    let (Some(worker), Some(video_rx)) = (prepared.worker.take(), prepared.video_rx.take()) else {
+        bail!("fuente Linux ya usada");
+    };
+    let portal = prepared.portal.take();
+    let size_rx = prepared.size_rx.clone();
+    drop(prepared);
+    let outcome = session(
+        &conn,
+        &cfg,
+        &worker,
+        video_rx,
+        &size_rx,
+        portal.as_ref(),
+        shutdown,
+    )
+    .await;
+    let worker_stats = Prepared::release(worker, portal).await;
+    let (end_reason, control, send_task) = match outcome {
+        Ok(v) => v,
+        Err(e) => {
+            conn.close(b"error");
+            return Err(e);
+        }
+    };
+    let send = match send_task {
+        Some(t) => t.await.unwrap_or_default(),
+        None => Default::default(),
+    };
+    conn.close(b"bye");
+    // Si terminó la captura, decir por qué: fallo con causa, o fin normal
+    // (se dejó de compartir).
+    let end_reason = match (&worker_stats.fatal, end_reason.as_str()) {
+        (Some(f), "fallo en captura/codificación") => format!("{end_reason}: {f}"),
+        (None, "fallo en captura/codificación") => {
+            "se dejó de compartir la pantalla (el sistema cerró la captura)".to_owned()
+        }
+        _ => end_reason,
+    };
+    tracing::info!("fin de la transmisión: {end_reason}");
+    Ok(SenderReport {
+        duration: started_at.elapsed(),
+        end_reason,
+        worker: worker_stats,
+        send,
+        control,
+    })
+}
+
+type SessionOutcome = (
+    String,
+    ControlStats,
+    Option<tokio::task::JoinHandle<crate::stats::SendStats>>,
+);
+
+async fn session(
+    conn: &Connection,
+    cfg: &SenderConfig,
+    worker: &LinuxWorker,
+    video_rx: tokio_mpsc::Receiver<LinuxUnit>,
+    size_rx: &watch::Receiver<Option<(u32, u32)>>,
+    portal: Option<&PortalSession>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<SessionOutcome> {
     let mut ctl = FramedStream::new(conn.open_bi().await.context("abriendo canal de control")?);
     ctl.send(&ControlMessage::Hello(Hello {
         version: PROTOCOL_VERSION,
@@ -215,16 +507,9 @@ pub(crate) async fn run(
     if !sink.decoders.iter().any(|d| d.codec == Codec::H264) {
         bail!("el receptor no anuncia decodificador H.264");
     }
-    let portal = PortalCaptureSession::open()
-        .await
-        .context("autorizando captura mediante XDG Desktop Portal")?;
-    let mode = portal
-        .stream
-        .size
-        .map(|(width, height)| Mode::new(width.max(1) as u32, height.max(1) as u32, 60))
-        .unwrap_or(sink.native_mode);
-    let (video_tx, video_rx) = tokio_mpsc::channel(2);
-    let worker = LinuxWorker::start(portal.stream.node_id, portal.pipewire_fd, &cfg, video_tx)?;
+    // Tamaño real más reciente de la captura (puede haber cambiado).
+    let (width, height) = (*size_rx.borrow()).context("sin tamaño de captura")?;
+    let mode = Mode::new(width, height, 60);
     ctl.send(&ControlMessage::StartStream(StartStream {
         stream_id: STREAM_ID,
         mode: StreamMode::Duplicate,
@@ -240,28 +525,73 @@ pub(crate) async fn run(
         cfg.clone(),
         Duration::from_micros(16_667),
     ));
-    let end_reason = tokio::select! {
-        result = shutdown.changed() => {
-            if result.is_err() || *shutdown.borrow() {
-                "parada pedida (Ctrl+C)".to_owned()
-            } else {
-                "canal de parada cerrado".to_owned()
-            }
+    worker.shared.force_idr.store(true, Ordering::Relaxed);
+    worker.shared.streaming.store(true, Ordering::Relaxed);
+    tracing::info!("transmisión iniciada: {width}x{height}");
+
+    let mut cs = ControlStats::default();
+    let mut last_forced: Option<Instant> = None;
+    let deadline = cfg.duration.map(|d| tokio::time::Instant::now() + d);
+    let mut health = tokio::time::interval(Duration::from_secs(1));
+    // Señal del portal: el usuario dejó de compartir desde el sistema.
+    let portal_closed = async {
+        match portal {
+            Some(p) => p.wait_closed().await,
+            None => std::future::pending::<()>().await,
         }
-        result = ctl.expect::<ControlMessage>() => {
-            match result {
-                Ok(ControlMessage::Bye { reason }) => format!("receptor cerró la sesión: {reason:?}"),
-                Ok(other) => format!("control inesperado: {other:?}"),
-                Err(error) => format!("conexión de control perdida: {error}"),
+    };
+    tokio::pin!(portal_closed);
+    let end_reason = loop {
+        tokio::select! {
+            _ = health.tick() => {}
+            _ = &mut portal_closed => {
+                break "se dejó de compartir la pantalla desde el sistema".to_owned();
             }
+            result = shutdown.changed() => {
+                break if result.is_err() || *shutdown.borrow() {
+                    "parada pedida".to_owned()
+                } else {
+                    "canal de parada cerrado".to_owned()
+                };
+            }
+            _ = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => break "duración cumplida (--seconds)".to_owned(),
+            m = ctl.recv::<ControlMessage>() => match m {
+                Ok(Some(ControlMessage::RequestKeyframe { .. })) => {
+                    cs.keyframe_requests += 1;
+                    let now = Instant::now();
+                    if last_forced.is_none_or(|t| now.duration_since(t) >= MIN_IDR_INTERVAL) {
+                        last_forced = Some(now);
+                        worker.shared.force_idr.store(true, Ordering::Relaxed);
+                        cs.keyframes_forced += 1;
+                    } else {
+                        cs.keyframe_requests_ignored += 1;
+                    }
+                }
+                Ok(Some(ControlMessage::ReceiverStats(s))) => {
+                    cs.receiver_stats += 1;
+                    tracing::debug!(?s, "ReceiverStats");
+                    cs.last_receiver_stats = Some(s);
+                }
+                Ok(Some(ControlMessage::Bye { reason })) => {
+                    break format!("el receptor se despidió ({reason:?})");
+                }
+                Ok(Some(ControlMessage::StopStream { .. })) => {
+                    break "el receptor pidió StopStream".to_owned();
+                }
+                // Entrada, portapapeles, ping…: aún no se usan en Linux.
+                Ok(Some(_)) => {}
+                Ok(None) => break "el receptor cerró el canal de control".to_owned(),
+                Err(error) => break format!("conexión de control perdida: {error}"),
+            },
         }
-        _ = async {
-            if let Some(duration) = cfg.duration {
-                tokio::time::sleep(duration).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        } => "duración cumplida (--seconds)".to_owned(),
+        if worker.finished() {
+            break "fallo en captura/codificación".to_owned();
+        }
     };
     let _ = ctl
         .send(&ControlMessage::Bye {
@@ -269,16 +599,7 @@ pub(crate) async fn run(
         })
         .await;
     ctl.finish();
-    let worker_stats = worker.stop().await;
-    let send_stats = send_task.await.unwrap_or_default();
-    conn.close(b"bye");
-    Ok(SenderReport {
-        duration: started_at.elapsed(),
-        end_reason,
-        worker: worker_stats,
-        send: send_stats,
-        control: Default::default(),
-    })
+    Ok((end_reason, cs, Some(send_task)))
 }
 
 async fn expect_hello(ctl: &mut FramedStream) -> Result<cs_protocol::control::Hello> {
@@ -319,6 +640,7 @@ async fn send_video(
     interval: Duration,
 ) -> crate::stats::SendStats {
     let Some(max_datagram) = conn.max_datagram_size() else {
+        tracing::error!("la conexión no admite datagramas: no se puede enviar vídeo");
         return Default::default();
     };
     let mut stats = crate::stats::SendStats::default();

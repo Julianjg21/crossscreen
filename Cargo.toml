@@ -21,6 +21,7 @@ members = [
     "crates/cs-pipeline",
     "crates/cs-input",
     "crates/cs-clipboard",
+    "crates/cs-log",
 ]
 
 [workspace.package]
@@ -33,6 +34,7 @@ publish = false
 
 [workspace.dependencies]
 cs-core = { path = "crates/cs-core" }
+cs-log = { path = "crates/cs-log" }
 cs-protocol = { path = "crates/cs-protocol" }
 cs-security = { path = "crates/cs-security" }
 cs-transport = { path = "crates/cs-transport" }

@@ -617,51 +617,6 @@ impl Agent {
                 "Ya hay una transmisión en curso. Deténla antes de iniciar otra.",
             ));
         }
-        let bind: SocketAddr = if addr.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        }
-        .parse()
-        .expect("literal válido");
-        let endpoint = Endpoint::client(bind, self.identity.clone()).map_err(failed)?;
-        let conn = match tokio::time::timeout(
-            STREAM_CONNECT_TIMEOUT,
-            endpoint.connect(addr, PeerPolicy::Exactly(peer_record.fingerprint), ALPN),
-        )
-        .await
-        {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => {
-                endpoint.close();
-                return Err(failed(format!("No se pudo conectar con {addr}: {e}")));
-            }
-            Err(_) => {
-                endpoint.close();
-                return Err(err(
-                    ErrorCode::Timeout,
-                    format!(
-                        "Tiempo agotado al conectar con {addr}. Comprueba que el visor (crossscreen-viewer --listen) esté activo en ese puerto."
-                    ),
-                ));
-            }
-        };
-        let started_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let session = StreamSessionInfo {
-            peer_name: peer_record.name.clone(),
-            peer_fingerprint: peer_record.fingerprint.to_string(),
-            peer_fingerprint_short: peer_record.fingerprint.short(),
-            remote_addr: conn.remote_addr().to_string(),
-            mode,
-            mode_override,
-            bitrate_kbps,
-            profile,
-            initial_rtt_us: conn.rtt().as_micros() as u64,
-            started_at,
-        };
         let mut cfg = cs_pipeline::SenderConfig::new(
             self.identity.fingerprint().device_id(),
             self.name.clone(),
@@ -691,6 +646,59 @@ impl Agent {
                 cfg.pacing = cs_transport::PacingMode::Spread { fraction: 0.70 };
             }
         }
+        // Linux: diálogo del sistema para elegir la pantalla ANTES de conectar
+        // (el receptor solo espera 10 s al inicio de la sesión). En Windows no
+        // hace nada. Si falla la conexión, soltar `source` libera la captura.
+        let source = cs_pipeline::prepare_source(&cfg)
+            .await
+            .map_err(|e| failed(format!("No se pudo preparar la captura: {e:#}")))?;
+        let bind: SocketAddr = if addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        }
+        .parse()
+        .expect("literal válido");
+        let endpoint = Endpoint::client(bind, self.identity.clone()).map_err(failed)?;
+        let conn = match tokio::time::timeout(
+            STREAM_CONNECT_TIMEOUT,
+            endpoint.connect(addr, PeerPolicy::Exactly(peer_record.fingerprint), ALPN),
+        )
+        .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => {
+                endpoint.close();
+                return Err(failed(format!(
+                    "No se pudo conectar con {addr}: {e}. Comprueba que el otro equipo esté en «Recibir pantalla» y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)."
+                )));
+            }
+            Err(_) => {
+                endpoint.close();
+                return Err(err(
+                    ErrorCode::Timeout,
+                    format!(
+                        "Tiempo agotado al conectar con {addr}. Comprueba que el otro equipo esté en «Recibir pantalla» (o crossscreen-viewer --listen) y que su firewall permita crossscreen-viewer (en Windows: «Permitir» en redes privadas)."
+                    ),
+                ));
+            }
+        };
+        let started_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let session = StreamSessionInfo {
+            peer_name: peer_record.name.clone(),
+            peer_fingerprint: peer_record.fingerprint.to_string(),
+            peer_fingerprint_short: peer_record.fingerprint.short(),
+            remote_addr: conn.remote_addr().to_string(),
+            mode,
+            mode_override,
+            bitrate_kbps,
+            profile,
+            initial_rtt_us: conn.rtt().as_micros() as u64,
+            started_at,
+        };
         cfg.reconnect = Some(cs_pipeline::ReconnectConfig {
             endpoint: endpoint.clone(),
             addr,
@@ -722,7 +730,7 @@ impl Agent {
         let agent = self.clone();
         let sess_for_task = session.clone();
         tokio::spawn(async move {
-            let res = cs_pipeline::run_sender(conn, cfg, stop_rx).await;
+            let res = cs_pipeline::run_sender(conn, cfg, source, stop_rx).await;
             endpoint.close();
             let report = Box::new(build_stream_report(&sess_for_task, res));
             if let Some(e) = &report.error {

@@ -368,7 +368,7 @@ async fn run(
             .context("releyendo el almacén de confianza")?
             .fingerprints())
     };
-    println!(
+    cs_log::out!(
         "crossscreen-viewer escuchando en UDP {} (huella {}, {} par(es) de confianza); native_mode {}x{}@{:.2} Hz, {} dpi",
         local_addr,
         identity.fingerprint().short(),
@@ -386,14 +386,14 @@ async fn run(
                     *set = fps.into_iter().collect();
                 }
             }
-            Err(e) => eprintln!("{e:#}; se mantiene la lista anterior"),
+            Err(e) => cs_log::err_out!("{e:#}; se mantiene la lista anterior"),
         }
         let conn = tokio::select! {
             c = endpoint.accept() => match c {
                 None => break,
                 Some(Ok(c)) => c,
                 Some(Err(e)) => {
-                    eprintln!("conexión rechazada: {e}");
+                    cs_log::err_out!("conexión rechazada: {e}");
                     continue;
                 }
             },
@@ -408,7 +408,7 @@ async fn run(
             .map(|fps| fps.contains(&conn.peer_fingerprint()))
             .unwrap_or(false);
         if !still_trusted {
-            eprintln!(
+            cs_log::err_out!(
                 "conexión de {} rechazada: el equipo {} ya no está emparejado",
                 conn.remote_addr(),
                 conn.peer_fingerprint().short()
@@ -416,7 +416,7 @@ async fn run(
             conn.close(b"not trusted");
             continue;
         }
-        println!(
+        cs_log::out!(
             "conexión de {} ({})",
             conn.remote_addr(),
             conn.peer_fingerprint().short()
@@ -424,15 +424,15 @@ async fn run(
         let exit = session(&conn, &identity, &cfg, &proxy, &mut cmd_rx).await;
         let shutdown = match exit {
             Ok(Exit::Shutdown) => {
-                println!("sesión cerrada a petición del receptor");
+                cs_log::out!("sesión cerrada a petición del receptor");
                 true
             }
             Ok(Exit::Ended(reason)) => {
-                println!("sesión terminada: {reason}");
+                cs_log::out!("sesión terminada: {reason}");
                 false
             }
             Err(e) => {
-                eprintln!("sesión fallida: {e:#}");
+                cs_log::err_out!("sesión fallida: {e:#}");
                 false
             }
         };
@@ -440,7 +440,7 @@ async fn run(
         if shutdown || cfg.once {
             break;
         }
-        println!("volviendo a escuchar…");
+        cs_log::out!("volviendo a escuchar…");
     }
     endpoint.close();
     // Dar tiempo a que salga el CONNECTION_CLOSE.
@@ -487,9 +487,12 @@ async fn session(
             PROTOCOL_VERSION.minor
         );
     }
-    println!(
+    cs_log::out!(
         "fuente: «{}» ({}), protocolo {}.{}",
-        h.device_name, h.device_id, h.version.major, h.version.minor
+        h.device_name,
+        h.device_id,
+        h.version.major,
+        h.version.minor
     );
     let missing = PROTOCOL_VERSION.missing_features_in(&h.version);
     if !missing.is_empty() {
@@ -499,7 +502,7 @@ async fn session(
             h.version.minor,
             missing.join(", ")
         );
-        println!("AVISO: {msg}");
+        cs_log::out!("AVISO: {msg}");
         tracing::warn!("{msg}");
     }
     // 2. Hello propio.
@@ -559,7 +562,7 @@ async fn session(
         ctl.finish();
         bail!(reason);
     }
-    println!(
+    cs_log::out!(
         "StartStream: {:?}, {}x{}@{:.2} Hz, {} kb/s",
         start.mode,
         m.width,
@@ -648,7 +651,7 @@ async fn streaming(
         stream_id: STREAM_ID,
     })
     .await?;
-    println!("StreamStarted enviado; esperando el primer IDR");
+    cs_log::out!("StreamStarted enviado; esperando el primer IDR");
     let lock = || stats.lock().unwrap_or_else(|e| e.into_inner());
     lock().started = Some(Instant::now());
     if let Some(c) = early_shape {

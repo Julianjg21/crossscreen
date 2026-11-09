@@ -6,6 +6,7 @@ import {
   isUnavailable,
   onAgentDisconnected,
   onAgentEvent,
+  openLogsDir,
   type AgentInfo,
   type AgentStatus,
 } from "./api";
@@ -136,6 +137,13 @@ export default function App() {
           {conn.state === "connecting" && <>Conectando…</>}
           {conn.state === "unavailable" && <>Agente no iniciado</>}
         </div>
+        <button
+          type="button"
+          className="link logs-link"
+          onClick={() => openLogsDir().catch((e) => window.alert(errorMessage(e)))}
+        >
+          Abrir carpeta de registros
+        </button>
       </aside>
 
       <main className="content">

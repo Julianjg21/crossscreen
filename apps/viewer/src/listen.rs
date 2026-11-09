@@ -134,7 +134,7 @@ impl ListenApp {
     fn init(&mut self, el: &ActiveEventLoop) -> Result<()> {
         let monitors: Vec<_> = el.available_monitors().collect();
         for (i, m) in monitors.iter().enumerate() {
-            println!(
+            cs_log::out!(
                 "monitor {i}: {} {}x{} en ({}, {}), {:.2} Hz, escala {:.2}",
                 m.name().unwrap_or_default(),
                 m.size().width,
@@ -260,9 +260,13 @@ impl ListenApp {
             Ok(Err(e)) => return Err(anyhow!(e)),
             Err(_) => return Err(anyhow!("el decodificador no arrancó a tiempo")),
         }
-        println!(
+        cs_log::out!(
             "sesión con {}: ventana {}x{}, modo del emisor {}x{}",
-            s.peer, size.width, size.height, s.display_mode.width, s.display_mode.height
+            s.peer,
+            size.width,
+            size.height,
+            s.display_mode.width,
+            s.display_mode.height
         );
         self.session = Some(Session {
             current: None,
@@ -303,7 +307,7 @@ impl ListenApp {
             let _ = t.join();
         }
         drop(s.mailbox.take());
-        println!("fin de sesión: {reason}");
+        cs_log::out!("fin de sesión: {reason}");
         s.stats
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -364,7 +368,7 @@ impl ListenApp {
             if let Some(path) = &shot_path {
                 let (w, h, rgba) = s.renderer.capture_rgba()?;
                 save_png(path, w, h, &rgba)?;
-                println!(
+                cs_log::out!(
                     "captura del back buffer ({w}x{h}, frame presentado {presented_idx}) guardada en {}",
                     path.display()
                 );
@@ -427,7 +431,7 @@ impl ApplicationHandler<UserEvent> for ListenApp {
             UserEvent::Start(s, ready) => {
                 let res = self.start_session(el, *s);
                 if let Err(e) = &res {
-                    eprintln!("no se pudo iniciar la sesión: {e:#}");
+                    cs_log::err_out!("no se pudo iniciar la sesión: {e:#}");
                     self.end_session("fallo al iniciar");
                 }
                 let _ = ready.send(res.map_err(|e| format!("{e:#}")));
@@ -622,13 +626,13 @@ impl ApplicationHandler<UserEvent> for ListenApp {
             .shutdown_at
             .is_some_and(|t| now.duration_since(t) >= SHUTDOWN_GRACE)
         {
-            eprintln!("la red no terminó a tiempo; saliendo");
+            cs_log::err_out!("la red no terminó a tiempo; saliendo");
             el.exit();
             return;
         }
         if self.session.as_ref().is_some_and(|s| s.due(now)) {
             if let Err(e) = self.render_once() {
-                eprintln!("error de presentación: {e:#}");
+                cs_log::err_out!("error de presentación: {e:#}");
                 self.error = Some(e);
                 self.request_shutdown(el);
             }

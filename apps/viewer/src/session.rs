@@ -238,8 +238,8 @@ impl SessionStats {
                 0.0
             }
         };
-        println!("=== crossscreen-viewer: resumen de la sesión ===");
-        println!(
+        cs_log::out!("=== crossscreen-viewer: resumen de la sesión ===");
+        cs_log::out!(
             "duración {:.2} s, vídeo {}x{}, zero-copy {}",
             elapsed,
             self.video_size.0,
@@ -251,7 +251,7 @@ impl SessionStats {
                 None => "sin frames",
             }
         );
-        println!(
+        cs_log::out!(
             "red: {} datagramas, {} frames reensamblados ({:.1} fps), {} perdidos ({} sin ningún datagrama), {} shards recuperados por FEC, {} datagramas tardíos, {} desbordes de la cola de decodificación",
             self.datagrams,
             self.frames_received,
@@ -262,7 +262,7 @@ impl SessionStats {
             self.late_datagrams,
             self.decode_queue_overflows
         );
-        println!(
+        cs_log::out!(
             "decodificación ({}): {} frames ({} con referencias rotas), {} errores, {} atascos, {} descartados esperando IDR, {} saltados por retraso en cola, {} sustituidos en el buzón sin presentar",
             match self.loss_policy {
                 LossPolicy::DecodeThrough => "decodificar a través de la pérdida",
@@ -276,14 +276,14 @@ impl SessionStats {
             self.dropped_for_lag,
             self.mailbox_replaced,
         );
-        println!(
+        cs_log::out!(
             "RequestKeyframe: {} enviados ({} por espera vencida), {} avisos de pérdida sin petición nueva (ya había una pendiente), RTT {:.1} ms",
             self.keyframe_requests_sent,
             self.keyframe_request_timeouts,
             self.keyframe_needs_suppressed,
             self.rtt.as_secs_f64() * 1e3
         );
-        println!(
+        cs_log::out!(
             "presentación: {} frames ({:.1} fps, {} con posibles artefactos), {} repintados solo de cursor; cursor: {} formas, {} posiciones{}",
             self.frames_presented,
             fps(self.frames_presented),
@@ -301,7 +301,7 @@ impl SessionStats {
                 String::new()
             }
         );
-        println!(
+        cs_log::out!(
             "congelaciones (> {} ms sin frame nuevo): {}, {:.0} ms en total, la más larga {:.0} ms",
             FREEZE_THRESHOLD.as_millis(),
             self.freezes,
@@ -311,7 +311,7 @@ impl SessionStats {
         let n = self.episode_requests.len();
         if n > 0 {
             let mean = |v: &[u64]| v.iter().sum::<u64>() as f64 / v.len() as f64;
-            println!(
+            cs_log::out!(
                 "episodios de pérdida cerrados: {n}{}; peticiones por episodio media {:.2} máx. {}; frames decodificados durante el episodio media {:.1} máx. {}",
                 if self.episode_open_at_end { " (+1 abierto al terminar)" } else { "" },
                 mean(&self.episode_requests),
@@ -320,17 +320,17 @@ impl SessionStats {
                 self.episode_frames.iter().max().copied().unwrap_or(0),
             );
         } else if self.episode_open_at_end {
-            println!("episodios de pérdida: 1 abierto al terminar, ninguno cerrado");
+            cs_log::out!("episodios de pérdida: 1 abierto al terminar, ninguno cerrado");
         }
         if let Some(t) = self.first_frame {
-            println!(
+            cs_log::out!(
                 "primer frame decodificado: {:.1} ms tras crear el decodificador",
                 t.as_secs_f64() * 1e3
             );
         }
         let line = |name: &str, s: &LatencyStats| match s.summary() {
-            Some(sum) => println!("{name:<44} {sum}"),
-            None => println!("{name:<44} (sin datos)"),
+            Some(sum) => cs_log::out!("{name:<44} {sum}"),
+            None => cs_log::out!("{name:<44} (sin datos)"),
         };
         line(
             "espera en cola antes de decodificar",
@@ -361,7 +361,7 @@ impl SessionStats {
                 &self.capture_to_present,
             );
             if self.capture_to_present_invalid > 0 {
-                println!(
+                cs_log::out!(
                     "  ({} muestras descartadas: pts en el futuro, relojes no comparables)",
                     self.capture_to_present_invalid
                 );

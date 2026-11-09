@@ -31,6 +31,14 @@ struct CmdError {
 }
 
 impl CmdError {
+    fn local(message: impl Into<String>) -> Self {
+        CmdError {
+            kind: "local_error",
+            code: None,
+            message: message.into(),
+        }
+    }
+
     fn unavailable(message: impl Into<String>) -> Self {
         CmdError {
             kind: "agent_unavailable",
@@ -237,7 +245,7 @@ async fn spawn_and_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInf
             // Código 2 = ya había otro agente: intentar conectar igualmente.
             if status.code() != Some(2) {
                 return Err(CmdError::unavailable(format!(
-                    "El agente terminó al arrancar ({status}). Revisa agent.log en el directorio de datos."
+                    "El agente terminó al arrancar ({status}). Abre la carpeta de registros (botón del panel) y revisa el último agent-*.log."
                 )));
             }
         }
@@ -250,6 +258,25 @@ async fn spawn_and_connect(app: &AppHandle, conn: &AgentConn) -> Result<AgentInf
     ))
 }
 
+/// Abre la carpeta de registros (agente, visor, CLI y panel) en el
+/// explorador de archivos y devuelve su ruta.
+#[tauri::command]
+fn open_logs_dir() -> Result<String, CmdError> {
+    let dir = cs_log::log_dir()
+        .ok_or_else(|| CmdError::local("No se pudo determinar la carpeta de registros"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| CmdError::local(format!("No se pudo crear {}: {e}", dir.display())))?;
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(not(windows))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| CmdError::local(format!("No se pudo abrir {}: {e}", dir.display())))?;
+    Ok(dir.display().to_string())
+}
+
 /// Lanza el agente en segundo plano y espera a que acepte conexiones.
 #[tauri::command]
 async fn start_agent(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
@@ -257,15 +284,18 @@ async fn start_agent(app: AppHandle, conn: State<'_, AgentConn>) -> Result<Agent
 }
 
 fn main() {
+    cs_log::init_file_only("desktop", "info");
     tauri::Builder::default()
         .manage(AgentConn::default())
         .invoke_handler(tauri::generate_handler![
             agent_connect,
             agent_request,
-            start_agent
+            start_agent,
+            open_logs_dir
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {
+            tracing::error!("error al ejecutar la aplicación: {e}");
             eprintln!("error al ejecutar la aplicación: {e}");
             std::process::exit(1);
         });

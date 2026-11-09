@@ -27,7 +27,7 @@ pub fn main(args: Args) -> Result<()> {
     if aus.is_empty() {
         return Err(anyhow!("{} no contiene NAL units Annex-B", file.display()));
     }
-    println!(
+    cs_log::out!(
         "{}: {} bytes, {} access units",
         file.display(),
         data.len(),
@@ -107,7 +107,7 @@ impl App {
     fn init(&mut self, el: &ActiveEventLoop) -> Result<()> {
         let monitors: Vec<_> = el.available_monitors().collect();
         for (i, m) in monitors.iter().enumerate() {
-            println!(
+            cs_log::out!(
                 "monitor {i}: {} {}x{} en ({}, {})",
                 m.name().unwrap_or_default(),
                 m.size().width,
@@ -227,7 +227,7 @@ impl App {
             if let Some(path) = &self.args.screenshot {
                 let (w, h, rgba) = gpu.renderer.capture_rgba()?;
                 save_png(path, w, h, &rgba)?;
-                println!(
+                cs_log::out!(
                     "captura del back buffer ({w}x{h}) guardada en {}",
                     path.display()
                 );
@@ -263,8 +263,8 @@ impl App {
             .started
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
-        println!("=== crossscreen-viewer: resumen ===");
-        println!(
+        cs_log::out!("=== crossscreen-viewer: resumen ===");
+        cs_log::out!(
             "vídeo {}x{}, {} AUs entregadas, {} frames presentados en {:.2} s ({:.1} fps), ticks tardíos {}, errores {}, stream changes {}",
             self.video_size.0,
             self.video_size.1,
@@ -276,7 +276,7 @@ impl App {
             self.stats.errors,
             self.stream_changes,
         );
-        println!(
+        cs_log::out!(
             "zero-copy (SRV sobre la superficie del decodificador): {}",
             match self.zero_copy {
                 Some(true) => "sí",
@@ -285,8 +285,8 @@ impl App {
             }
         );
         let line = |name: &str, s: &LatencyStats| match s.summary() {
-            Some(sum) => println!("{name:<38} {sum}"),
-            None => println!("{name:<38} (sin datos)"),
+            Some(sum) => cs_log::out!("{name:<38} {sum}"),
+            None => cs_log::out!("{name:<38} (sin datos)"),
         };
         line("decode (AU→salida del MFT, CPU)", &self.stats.decode_cpu);
         line("decode (AU→GPU terminó)", &self.stats.decode_gpu);

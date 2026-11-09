@@ -420,7 +420,11 @@ export default function Stream({
                 <option value="extend" disabled={status.platform === "linux"}>
                   Extender escritorio (monitor virtual; solo Windows)
                 </option>
-                <option value="duplicate">Duplicar pantalla principal</option>
+                <option value="duplicate">
+                  {status.platform === "linux"
+                    ? "Duplicar la pantalla que elijas"
+                    : "Duplicar pantalla principal"}
+                </option>
               </select>
 
               <div className="form-inline" style={{ marginTop: 12 }}>
@@ -508,7 +512,11 @@ export default function Stream({
 
           <div className="actions" style={{ marginTop: 18 }}>
             <button type="submit" className="primary" disabled={busy || !selectedPeer}>
-              {busy ? "Conectando…" : "Iniciar transmisión"}
+              {busy
+                ? status.platform === "linux"
+                  ? "Elige la pantalla en el diálogo del sistema…"
+                  : "Conectando…"
+                : "Iniciar transmisión"}
             </button>
           </div>
         </form>
