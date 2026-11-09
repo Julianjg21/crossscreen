@@ -77,6 +77,11 @@ pub struct StreamArgs {
     /// Desactivar la inyección de entrada remota (ratón y teclado del receptor).
     #[arg(long)]
     pub no_remote_input: bool,
+    /// Linux: permitir que el receptor controle este equipo (ratón y
+    /// teclado). Hace falta pedirlo: al extender, GNOME no muestra diálogo.
+    /// En Windows ya está activado (salvo `--no-remote-input`).
+    #[arg(long)]
+    pub allow_remote_input: bool,
     /// Sincronizar el portapapeles de texto con el receptor (desactivado por
     /// defecto: puede contener contraseñas u otros datos sensibles).
     #[arg(long)]
@@ -126,7 +131,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     cfg.duration = a.seconds.map(Duration::from_secs);
     cfg.static_refresh =
         (a.static_refresh > 0.0).then(|| Duration::from_secs_f64(a.static_refresh));
-    cfg.accept_input = !a.no_remote_input;
+    cfg.accept_input = !a.no_remote_input && (cfg!(windows) || a.allow_remote_input);
     cfg.clipboard = a.clipboard;
     cfg.sim_loss = a.sim_loss.map(|m| (m, a.sim_loss_seed));
 

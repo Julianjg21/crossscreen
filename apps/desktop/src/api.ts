@@ -148,6 +148,7 @@ export type Request =
       bitrate_kbps: number;
       profile: StreamProfileInfo;
       clipboard: boolean;
+      accept_input?: boolean;
     }
   | { kind: "stop_stream" }
   | { kind: "start_receiver"; port: number; fullscreen: boolean; clipboard: boolean }

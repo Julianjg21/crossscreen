@@ -123,6 +123,11 @@ pub enum Request {
         /// Sincronizar el portapapeles de texto (F7). Desactivado por defecto.
         #[serde(default)]
         clipboard: bool,
+        /// Permitir que el receptor controle este equipo (ratón y teclado).
+        /// `None` (paneles anteriores): sí en Windows, no en Linux (allí el
+        /// monitor virtual de GNOME no pide confirmación al sistema).
+        #[serde(default)]
+        accept_input: Option<bool>,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -429,6 +434,7 @@ mod tests {
                 bitrate_kbps: 20_000,
                 profile: StreamProfileInfo::Wifi,
                 clipboard: true,
+                accept_input: Some(false),
             },
             Request::StopStream,
             Request::StartReceiver {

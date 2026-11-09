@@ -77,6 +77,9 @@ export default function Stream({
   const [mode, setMode] = useState<StreamModeInfo>("extend");
   const [profile, setProfile] = useState<StreamProfileInfo>("auto");
   const [clipboard, setClipboard] = useState(false);
+  // Control remoto de este equipo: sí por defecto en Windows; en Linux hay
+  // que activarlo (al extender, GNOME no pide confirmación).
+  const [allowInput, setAllowInput] = useState(status.platform !== "linux");
   const [resOption, setResOption] = useState("native");
   const [hz, setHz] = useState(60);
   const [mbps, setMbps] = useState("20");
@@ -232,6 +235,7 @@ export default function Stream({
           bitrate_kbps: Math.round(mbpsNum * 1000),
           profile,
           clipboard,
+          accept_input: allowInput,
         },
         "stream_started",
       );
@@ -469,6 +473,20 @@ export default function Stream({
               <p id="stream-clipboard-help" className="muted" style={{ marginTop: 4 }}>
                 Lo que copies en este equipo se enviará al otro, y al revés. Desactivado por
                 defecto: el portapapeles puede contener contraseñas u otros datos sensibles.
+              </p>
+
+              <label style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={allowInput}
+                  onChange={(e) => setAllowInput(e.target.checked)}
+                  aria-describedby="stream-input-help"
+                />
+                <span>Permitir que el receptor controle este equipo (ratón y teclado)</span>
+              </label>
+              <p id="stream-input-help" className="muted" style={{ marginTop: 4 }}>
+                Quien mira la pantalla en el otro equipo podrá mover el ratón y escribir aquí.
+                {status.platform === "linux" && " En Linux está desactivado por defecto."}
               </p>
 
               <label htmlFor="stream-profile" style={{ marginTop: 12 }}>

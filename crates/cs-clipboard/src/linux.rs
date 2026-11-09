@@ -15,6 +15,11 @@ pub struct LinuxClipboard {
     seq: Cell<u32>,
     /// Huella y texto de la última lectura (o escritura propia).
     last: RefCell<Option<(TextHash, String)>>,
+    /// ¿Ya hubo una lectura válida? Mientras no, el contenido es desconocido
+    /// y la primera lectura que funcione solo fija la línea base (no cuenta
+    /// como cambio): así lo copiado antes de la sesión nunca se envía aunque
+    /// la lectura inicial fallara (sin *fail-open*).
+    known: Cell<bool>,
 }
 
 impl std::fmt::Debug for LinuxClipboard {
@@ -44,6 +49,7 @@ impl LinuxClipboard {
             inner: RefCell::new(cb),
             seq: Cell::new(1),
             last: RefCell::new(None),
+            known: Cell::new(false),
         };
         // Estado inicial sin avanzar el contador.
         let _ = me.poll();
@@ -59,6 +65,11 @@ impl LinuxClipboard {
         };
         let now = text.filter(|t| !t.is_empty()).map(|t| (hash_text(&t), t));
         let mut last = self.last.borrow_mut();
+        if !self.known.replace(true) {
+            // Primera lectura válida: línea base, no un cambio.
+            *last = now;
+            return Ok(false);
+        }
         let changed = last.as_ref().map(|(h, _)| h) != now.as_ref().map(|(h, _)| h);
         if changed {
             *last = now;
@@ -89,6 +100,7 @@ impl LinuxClipboard {
             .set_text(canonical.to_owned())
             .map_err(|e| os_error("set_text", &e))?;
         *self.last.borrow_mut() = Some((hash_text(canonical), canonical.to_owned()));
+        self.known.set(true);
         self.seq.set(self.seq.get().wrapping_add(1));
         Ok(self.seq.get())
     }

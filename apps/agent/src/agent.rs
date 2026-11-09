@@ -263,6 +263,7 @@ impl Agent {
                 bitrate_kbps,
                 profile,
                 clipboard,
+                accept_input,
             } => {
                 self.start_stream(
                     &addr,
@@ -272,6 +273,7 @@ impl Agent {
                     bitrate_kbps,
                     profile,
                     clipboard,
+                    accept_input,
                 )
                 .await
             }
@@ -548,6 +550,7 @@ impl Agent {
         bitrate_kbps: u32,
         profile: StreamProfileInfo,
         clipboard: bool,
+        accept_input: Option<bool>,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -628,6 +631,9 @@ impl Agent {
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
         cfg.clipboard = clipboard;
+        // Control remoto de este equipo: explícito en Linux (sin diálogo del
+        // sistema al extender); por defecto sí en Windows.
+        cfg.accept_input = accept_input.unwrap_or(cfg!(windows));
         match profile {
             StreamProfileInfo::Auto => {}
             StreamProfileInfo::Wifi => {
