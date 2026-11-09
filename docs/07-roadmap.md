@@ -35,7 +35,7 @@ Leyenda: ✅ cumplido · 🟡 en parte · ❌ pendiente. Detalle y bitácora en 
 | **F4** Linux | ✅ receptor (OpenH264 + wgpu, Wayland/X11); fuente duplicar (portal + PipeWire) y extender (monitor virtual de Mutter) en GNOME; entrada y portapapeles; reconexión | **VAAPI** (decodificar y codificar por GPU); `restore_token` (no pedir el diálogo cada vez); respaldo X11/XShm; **KDE Plasma 6 y Sway**; **probar Linux → Linux** |
 | **F5** Robustez y Wi-Fi | ✅ FEC adaptativo y entrelazado, perfiles de red, ventana de gracia, 0 congelaciones con ~5 % de pérdida en ráfagas (Gilbert-Elliott) | Control de tasa adaptativo (el codificador MF de Intel ignora el cambio de bitrate en caliente); migración de interfaz; medir p95 ≤ 60 ms en Wi-Fi 6 |
 | **F6** Entrada remota | ✅ ratón y teclado en las tres direcciones (SendInput; Mutter `RemoteDesktop`/portal en Linux), liberación de teclas al cortar | Táctil y pluma; **medir** latencia de ratón ≤ 1 RTT + 2 ms y 10 000 eventos sin pérdidas |
-| **F7** Valor añadido | ✅ portapapeles de **texto** bidireccional, perfiles de red; arranque automático, registros, OpenH264 desde el panel; **audio** (Opus, ADR-0008); **varios monitores** por sesión (ADR-0009) | Portapapeles de **imágenes**, **transferencia de archivos** |
+| **F7** Valor añadido | ✅ portapapeles de **texto** bidireccional, perfiles de red; arranque automático, registros, OpenH264 desde el panel; **audio** (Opus, ADR-0008); **varios monitores** por sesión (ADR-0009); **transferencia de archivos** (ADR-0010) | Portapapeles de **imágenes** |
 | **F8** Avanzado | — | Driver IddCx propio, HEVC/AV1, HDR, receptor web |
 
 Para 1.0, además: auditoría de seguridad externa, firma de código e instalador de Windows (con regla de firewall).

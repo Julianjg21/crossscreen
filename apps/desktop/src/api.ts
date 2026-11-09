@@ -86,6 +86,17 @@ export interface StreamSessionInfo {
   started_at: number;
   /** IPC 1.6: monitores de la sesión (0 o ausente = 1). */
   monitors?: number;
+  /** IPC 1.7: transferencia de archivos activa. */
+  files?: boolean;
+}
+
+/** IPC 1.7: resultado de un archivo enviado o recibido. */
+export interface FileTransferInfo {
+  name: string;
+  incoming: boolean;
+  size: number | null;
+  path: string | null;
+  error: string | null;
 }
 
 export interface LatencySummary {
@@ -136,6 +147,8 @@ export interface ReceiverAutoStartInfo {
   audio?: boolean;
   /** IPC 1.6: pantallas a la vez. */
   screens?: number;
+  /** IPC 1.7: transferencia de archivos. */
+  files?: boolean;
 }
 
 /** IPC 1.4: ajustes de arranque. */
@@ -181,6 +194,8 @@ export type Request =
       audio?: boolean;
       /** IPC 1.6: monitores virtuales a la vez (solo extender). */
       monitors?: number;
+      /** IPC 1.7: transferencia de archivos con el receptor. */
+      files?: boolean;
     }
   | { kind: "stop_stream" }
   | {
@@ -192,7 +207,10 @@ export type Request =
       audio?: boolean;
       /** IPC 1.6: pantallas a la vez (un visor por pantalla, puertos consecutivos). */
       screens?: number;
+      /** IPC 1.7: transferencia de archivos con el emisor. */
+      files?: boolean;
     }
+  | { kind: "send_files"; paths: string[] }
   | { kind: "stop_receiver" }
   | { kind: "install_open_h264" }
   | { kind: "get_settings" }
@@ -232,7 +250,8 @@ export type AgentEvent =
   | { kind: "stream_started"; session: StreamSessionInfo }
   | { kind: "stream_ended"; report: StreamReportInfo }
   | { kind: "receiver_started"; receiver: ReceiverSessionInfo }
-  | { kind: "receiver_ended"; message: string | null };
+  | { kind: "receiver_ended"; message: string | null }
+  | ({ kind: "file_transfer" } & FileTransferInfo);
 
 export interface CmdError {
   kind: "agent_unavailable" | "agent_error" | "protocol" | "local_error";
@@ -264,6 +283,7 @@ export const agent = {
 
 /** Abre la carpeta de registros en el explorador; devuelve su ruta. */
 export const openLogsDir = () => invoke<string>("open_logs_dir");
+export const openFilesDir = () => invoke<string>("open_files_dir");
 
 /** Petición que espera un tipo de respuesta concreto. */
 export async function call<K extends Response["kind"]>(

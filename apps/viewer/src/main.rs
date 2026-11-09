@@ -121,6 +121,11 @@ pub struct Args {
     /// equipo y cuántas pantallas recibe).
     #[arg(long)]
     pub no_announce: bool,
+    /// Transferencia de archivos con la fuente (desactivada por defecto):
+    /// los archivos que se suelten en la ventana se envían a la fuente y los
+    /// que lleguen se guardan en Descargas/CrossScreen.
+    #[arg(long)]
+    pub files: bool,
 }
 
 fn main() -> anyhow::Result<()> {

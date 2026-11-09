@@ -94,6 +94,13 @@ pub struct StreamArgs {
     /// puerto). El portapapeles y el audio viajan solo con el primero.
     #[arg(long, default_value_t = 1)]
     pub monitors: u8,
+    /// Transferencia de archivos con el receptor (desactivada por defecto):
+    /// los que lleguen se guardan en Descargas/CrossScreen.
+    #[arg(long)]
+    pub files: bool,
+    /// Archivo a enviar al receptor al conectar (repetible; implica `--files`).
+    #[arg(long = "send-file", value_name = "RUTA")]
+    pub send_files: Vec<std::path::PathBuf>,
     /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
     /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
     #[arg(long)]
@@ -143,6 +150,48 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     cfg.accept_input = a.allow_remote_input && !a.no_remote_input;
     cfg.clipboard = a.clipboard;
     cfg.audio = a.audio;
+    let mut files_tx = None;
+    if a.files || !a.send_files.is_empty() {
+        let inbox = cs_files::inbox_dir().context("no se encontró la carpeta de Descargas")?;
+        let (handle, tx, mut events) = cs_files::FilesHandle::new(inbox.clone());
+        cs_log::out!(
+            "Transferencia de archivos activada (recibidos en {})",
+            inbox.display()
+        );
+        for f in &a.send_files {
+            if !f.is_file() {
+                bail!("--send-file: {} no es un archivo", f.display());
+            }
+            let _ = tx.send(f.clone());
+        }
+        // La cola sigue abierta mientras dure la sesión.
+        files_tx = Some(tx);
+        cfg.files = Some(handle);
+        tokio::spawn(async move {
+            while let Some(ev) = events.recv().await {
+                match ev {
+                    cs_files::FileEvent::Sent { name, size } => {
+                        cs_log::out!("Archivo enviado: {name} ({size} bytes)")
+                    }
+                    cs_files::FileEvent::Received { path, size, .. } => {
+                        cs_log::out!("Archivo recibido: {} ({size} bytes)", path.display())
+                    }
+                    cs_files::FileEvent::Failed {
+                        name,
+                        incoming,
+                        error,
+                    } => cs_log::err_out!(
+                        "Archivo {} {name}: {error}",
+                        if incoming {
+                            "no recibido"
+                        } else {
+                            "no enviado"
+                        }
+                    ),
+                }
+            }
+        });
+    }
     cfg.sim_loss = a.sim_loss.map(|m| (m, a.sim_loss_seed));
 
     // Señal de parada: Ctrl+C, Ctrl+Break y cierre de la consola.
@@ -220,6 +269,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     for t in tasks {
         results.push(t.await.context("tarea del monitor")?);
     }
+    drop(files_tx);
     endpoint.close();
     let mut fatal = None;
     for (i, res) in results.into_iter().enumerate() {

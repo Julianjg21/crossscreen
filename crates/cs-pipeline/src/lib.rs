@@ -14,6 +14,7 @@
 pub mod audio;
 pub mod cursor;
 pub mod display_guard;
+mod files;
 pub mod multi;
 mod reconnect;
 pub mod stats;
@@ -95,6 +96,9 @@ pub struct SenderConfig {
     /// Enviar el audio del sistema si el receptor lo pide (ADR-0008).
     /// Desactivado por defecto: por defecto solo se transmite la imagen.
     pub audio: bool,
+    /// Transferencia de archivos con el receptor (ADR-0010): cola de salida
+    /// y carpeta de recibidos. `None` (por defecto): desactivada.
+    pub files: Option<cs_files::FilesHandle>,
     /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
     /// `(modelo, semilla)`.
     pub sim_loss: Option<(LossModel, u64)>,
@@ -125,6 +129,7 @@ impl SenderConfig {
             accept_input: false,
             clipboard: false,
             audio: false,
+            files: None,
             sim_loss: None,
         }
     }

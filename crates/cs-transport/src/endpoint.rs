@@ -203,6 +203,16 @@ impl Connection {
         Ok(self.inner.accept_bi().await?)
     }
 
+    /// Stream unidireccional saliente (transferencia de archivos).
+    pub async fn open_uni(&self) -> Result<quinn::SendStream, TransportError> {
+        Ok(self.inner.open_uni().await?)
+    }
+
+    /// Siguiente stream unidireccional que abra el par.
+    pub async fn accept_uni(&self) -> Result<quinn::RecvStream, TransportError> {
+        Ok(self.inner.accept_uni().await?)
+    }
+
     pub fn stats(&self) -> quinn::ConnectionStats {
         self.inner.stats()
     }

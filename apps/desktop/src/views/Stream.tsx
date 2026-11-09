@@ -14,6 +14,7 @@ import {
   type StreamReportInfo,
   type StreamSessionInfo,
 } from "../api";
+import FilesPanel from "./FilesPanel";
 
 interface Props {
   status: AgentStatus;
@@ -97,6 +98,9 @@ export default function Stream({
   // Varios monitores (ADR-0009): uno por defecto en ambos lados.
   const [monitors, setMonitors] = useState(1);
   const [rxScreens, setRxScreens] = useState(1);
+  // Transferencia de archivos (ADR-0010): desactivada por defecto.
+  const [files, setFiles] = useState(false);
+  const [rxFiles, setRxFiles] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rxBusy, setRxBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -262,6 +266,7 @@ export default function Stream({
           accept_input: allowInput,
           audio,
           monitors: mode === "extend" ? monitors : 1,
+          files,
         },
         "stream_started",
       );
@@ -306,6 +311,7 @@ export default function Stream({
           clipboard: rxClipboard,
           audio: rxAudio,
           screens: rxScreens,
+          files: rxFiles,
         },
         "receiver_started",
       );
@@ -414,6 +420,7 @@ export default function Stream({
             <dt>Tiempo activo</dt>
             <dd>{formatElapsed(elapsed)}</dd>
           </dl>
+          {active.files && <FilesPanel />}
           <div className="actions" style={{ marginTop: 16 }}>
             <button type="button" className="danger" onClick={() => void stop()} disabled={busy}>
               {busy ? "Deteniendo…" : "Detener transmisión"}
@@ -601,6 +608,21 @@ export default function Stream({
                 por defecto; el receptor también debe activar «Reproducir el audio».
               </p>
 
+              <label style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={files}
+                  onChange={(e) => setFiles(e.target.checked)}
+                  aria-describedby="stream-files-help"
+                />
+                <span>Permitir enviar y recibir archivos</span>
+              </label>
+              <p id="stream-files-help" className="muted" style={{ marginTop: 4 }}>
+                Durante la transmisión podrás arrastrar archivos a esta ventana para enviarlos, y
+                el receptor soltarlos en su visor. Se guardan en Descargas/CrossScreen. Desactivado
+                por defecto; el receptor también debe activarlo.
+              </p>
+
               <label htmlFor="stream-profile" style={{ marginTop: 12 }}>
                 Perfil de red
               </label>
@@ -759,6 +781,21 @@ export default function Stream({
                 <p id="rx-audio-help" className="muted" style={{ marginTop: 4 }}>
                   Desactivado por defecto. Para que suene, el emisor también debe activar
                   «Enviar el audio de este equipo».
+                </p>
+                <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={rxFiles}
+                    onChange={(e) => setRxFiles(e.target.checked)}
+                    aria-describedby="rx-files-help"
+                  />
+                  <span>Permitir enviar y recibir archivos</span>
+                </label>
+                <p id="rx-files-help" className="muted" style={{ marginTop: 4 }}>
+                  Suelta archivos en la ventana del visor para enviarlos al emisor; los que lleguen
+                  se guardan en Descargas/CrossScreen. Desactivado por defecto; el emisor también
+                  debe activarlo. En Linux con Wayland aún no se pueden soltar archivos en el visor
+                  (sí recibirlos).
                 </p>
               </div>
               <div className="actions">

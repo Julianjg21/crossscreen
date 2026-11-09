@@ -23,10 +23,11 @@ members = [
     "crates/cs-clipboard",
     "crates/cs-log",
     "crates/cs-audio",
+    "crates/cs-files",
 ]
 
 [workspace.package]
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -43,6 +44,7 @@ cs-discovery = { path = "crates/cs-discovery" }
 cs-session = { path = "crates/cs-session" }
 cs-display = { path = "crates/cs-display" }
 cs-ipc = { path = "crates/cs-ipc" }
+cs-files = { path = "crates/cs-files" }
 
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }

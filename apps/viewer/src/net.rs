@@ -61,6 +61,14 @@ pub struct NetConfig {
     pub audio: bool,
     /// Anunciarse por mDNS (no si lo lanza el agente, que ya lo anuncia).
     pub announce: bool,
+    /// Transferencia de archivos con la fuente (ADR-0010).
+    pub files: bool,
+}
+
+/// Cola de archivos del visor: sobrevive a las sesiones.
+struct FilesCtx {
+    handle: cs_files::FilesHandle,
+    outbox: tokio::sync::mpsc::UnboundedSender<std::path::PathBuf>,
 }
 
 /// Arranca el hilo de red. Al terminar envía `UserEvent::NetDone`.
@@ -321,6 +329,41 @@ async fn run(
     mut cmd_rx: UnboundedReceiver<UiCmd>,
 ) -> Result<()> {
     let identity = Identity::load_or_create(&cfg.data_dir).context("cargando identidad")?;
+    let files = if cfg.files {
+        let inbox = cs_files::inbox_dir().context("no se encontró la carpeta de Descargas")?;
+        let (handle, outbox, mut events) = cs_files::FilesHandle::new(inbox.clone());
+        cs_log::out!(
+            "transferencia de archivos activada: suelta archivos en la ventana para enviarlos; los recibidos van a {}",
+            inbox.display()
+        );
+        tokio::spawn(async move {
+            while let Some(ev) = events.recv().await {
+                match ev {
+                    cs_files::FileEvent::Sent { name, size } => {
+                        cs_log::out!("archivo enviado: {name} ({size} bytes)")
+                    }
+                    cs_files::FileEvent::Received { path, size, .. } => {
+                        cs_log::out!("archivo recibido: {} ({size} bytes)", path.display())
+                    }
+                    cs_files::FileEvent::Failed {
+                        name,
+                        incoming,
+                        error,
+                    } => cs_log::err_out!(
+                        "archivo {} {name}: {error}",
+                        if incoming {
+                            "no recibido"
+                        } else {
+                            "no enviado"
+                        }
+                    ),
+                }
+            }
+        });
+        Some(FilesCtx { handle, outbox })
+    } else {
+        None
+    };
     let trust = TrustStore::open(cfg.data_dir.join("trusted-peers.json"))
         .context("abriendo almacén de confianza")?;
     let fps = trust.fingerprints();
@@ -411,6 +454,10 @@ async fn run(
             cmd = cmd_rx.recv() => match cmd {
                 Some(UiCmd::Shutdown) | None => break,
                 Some(UiCmd::Input(_)) => continue,
+                Some(UiCmd::SendFile(p)) => {
+                    cs_log::err_out!("sin sesión activa: no se envía {}", p.display());
+                    continue;
+                }
             },
         };
         // Segunda comprobación tras el handshake: el par pudo ser olvidado
@@ -432,7 +479,7 @@ async fn run(
             conn.remote_addr(),
             conn.peer_fingerprint().short()
         );
-        let exit = session(&conn, &identity, &cfg, &proxy, &mut cmd_rx).await;
+        let exit = session(&conn, &identity, &cfg, &proxy, &mut cmd_rx, files.as_ref()).await;
         let shutdown = match exit {
             Ok(Exit::Shutdown) => {
                 cs_log::out!("sesión cerrada a petición del receptor");
@@ -476,6 +523,7 @@ async fn session(
     cfg: &NetConfig,
     proxy: &EventLoopProxy<UserEvent>,
     cmd_rx: &mut UnboundedReceiver<UiCmd>,
+    files: Option<&FilesCtx>,
 ) -> Result<Exit> {
     let mut ctl = FramedStream::new(timed("el canal de control", conn.accept_bi()).await?);
     // 1. Hello de la fuente.
@@ -614,6 +662,7 @@ async fn session(
         cfg.keyframe_policy,
         cfg.clipboard,
         cfg.audio,
+        files,
     )
     .await;
     ctl.finish();
@@ -641,6 +690,7 @@ async fn streaming(
     keyframe_policy: KeyframePolicy,
     clipboard_enabled: bool,
     audio_enabled: bool,
+    files: Option<&FilesCtx>,
 ) -> Result<Exit> {
     match timed("la ventana y el decodificador", async {
         ready_rx
@@ -711,6 +761,15 @@ async fn streaming(
         ctl.send(&ControlMessage::AudioRequest { enabled: true })
             .await?;
     }
+    // Archivos (ADR-0010): anunciar y atender streams de archivo.
+    let file_svc = match files {
+        Some(f) => {
+            ctl.send(&ControlMessage::FilesAvailable { enabled: true })
+                .await?;
+            Some(cs_files::FileService::start(conn.clone(), &f.handle))
+        }
+        None => None,
+    };
 
     let exit = 'main: loop {
         tokio::select! {
@@ -838,6 +897,11 @@ async fn streaming(
                         }
                     }
                 }
+                Ok(Some(ControlMessage::FilesAvailable { enabled })) => {
+                    if let Some(f) = &file_svc {
+                        f.set_peer_enabled(enabled);
+                    }
+                }
                 Ok(Some(ControlMessage::AudioStop { .. })) => {
                     if let Some(a) = audio.take() {
                         lock().audio = Some(a.stats());
@@ -894,6 +958,12 @@ async fn streaming(
                     ctl.send(&ControlMessage::Input(ev)).await?;
                     lock().input_events_sent += 1;
                 }
+                Some(UiCmd::SendFile(p)) => match files {
+                    Some(f) => {
+                        let _ = f.outbox.send(p);
+                    }
+                    None => cs_log::err_out!("transferencia de archivos desactivada"),
+                },
                 Some(UiCmd::Shutdown) | None => {
                     let _ = ctl.send(&ControlMessage::Bye { reason: ByeReason::UserRequested }).await;
                     break Exit::Shutdown;

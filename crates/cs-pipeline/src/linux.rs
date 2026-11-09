@@ -732,6 +732,8 @@ async fn session(
     let mut peer_gone = false;
     // Audio del sistema (ADR-0008): solo si está activado y el receptor lo pide.
     let mut audio: Option<crate::audio::AudioSender> = None;
+    // Archivos (ADR-0010): solo si están activados.
+    let mut files = crate::files::start(&conn, cfg, &mut ctl).await;
     let end_reason: String = 'session: loop {
         let (drop_reason, connection_lost) = loop {
             tokio::select! {
@@ -805,6 +807,9 @@ async fn session(
                             cs.clipboard_received += 1;
                             b.deliver(t);
                         }
+                    }
+                    Ok(Some(ControlMessage::FilesAvailable { enabled })) => {
+                        crate::files::on_peer(&files, enabled);
                     }
                     Ok(Some(ControlMessage::AudioRequest { enabled })) => {
                         if enabled && cfg.audio && audio.is_none() {
@@ -901,6 +906,7 @@ async fn session(
             Ok(Some((new_conn, new_ctl))) => {
                 conn = new_conn;
                 ctl = new_ctl;
+                files = crate::files::start(&conn, cfg, &mut ctl).await;
                 peer_gone = false;
                 while recovered_rx.try_recv().is_ok() {}
                 worker.shared.force_idr.store(true, Ordering::Relaxed);

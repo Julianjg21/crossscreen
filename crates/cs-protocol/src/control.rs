@@ -82,6 +82,11 @@ pub enum ControlMessage {
     AudioStop {
         stream_id: u16,
     },
+    /// En ambos sentidos: este lado acepta (o ya no) archivos del par por
+    /// streams unidireccionales (ADR-0010). Sin este aviso no se envían.
+    FilesAvailable {
+        enabled: bool,
+    },
 }
 
 /// Códec de audio.

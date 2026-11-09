@@ -54,7 +54,7 @@ jobs:
       # extender y la entrada/portapapeles siguen siendo trabajo posterior.
       - name: Clippy y tests
         run: |
-          PKGS="-p cs-core -p cs-protocol -p cs-security -p cs-transport -p cs-discovery -p cs-session -p cs-ipc -p cs-capture -p cs-encode -p cs-pipeline -p cs-audio -p cs-input -p cs-clipboard -p cs-log"
+          PKGS="-p cs-core -p cs-protocol -p cs-security -p cs-transport -p cs-discovery -p cs-session -p cs-ipc -p cs-capture -p cs-encode -p cs-pipeline -p cs-audio -p cs-input -p cs-clipboard -p cs-log -p cs-files"
           VIEWER="-p cs-decode -p cs-render -p crossscreen-viewer -p crossscreen-cli"
           cargo clippy $PKGS $VIEWER --all-targets -- -D warnings
           cargo test $PKGS

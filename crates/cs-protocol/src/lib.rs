@@ -5,11 +5,13 @@
 //! - [`video`]: cabecera binaria fija de los fragmentos de vídeo que viajan en
 //!   datagramas QUIC.
 //! - [`audio`]: datagramas de audio Opus (ADR-0008).
+//! - [`files`]: streams de transferencia de archivos (ADR-0010).
 //!
 //! Ver `docs/04-protocolos-streaming.md`.
 
 pub mod audio;
 pub mod control;
+pub mod files;
 pub mod framing;
 pub mod video;
 
@@ -30,7 +32,9 @@ pub struct ProtocolVersion {
 /// - 0.3: portapapeles de texto (`ControlMessage::ClipboardText`, F7).
 /// - 0.4: audio (`AudioRequest`, `AudioStart`, `AudioStop` y datagramas de
 ///   audio, ADR-0008).
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 4 };
+/// - 0.5: transferencia de archivos (`FilesAvailable` y streams
+///   unidireccionales, ADR-0010).
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 5 };
 
 impl ProtocolVersion {
     /// Funciones que se pierden al hablar con un par de versión menor más
@@ -46,6 +50,9 @@ impl ProtocolVersion {
             }
             if peer.minor < 4 && self.minor >= 4 {
                 v.push("audio");
+            }
+            if peer.minor < 5 && self.minor >= 5 {
+                v.push("transferencia de archivos");
             }
         }
         v

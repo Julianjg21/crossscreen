@@ -367,6 +367,8 @@ pub(crate) async fn run(
     };
     // Audio del sistema (ADR-0008): solo si está activado y el receptor lo pide.
     let mut audio: Option<crate::audio::AudioSender> = None;
+    // Archivos (ADR-0010): solo si están activados.
+    let mut files = crate::files::start(&conn, &cfg, &mut ctl).await;
     let end_reason: String = 'session: loop {
         let drop_reason: String = loop {
             let deferred = coalescer
@@ -459,6 +461,9 @@ pub(crate) async fn run(
                             cs.clipboard_received += 1;
                             b.deliver(t);
                         }
+                    }
+                    Ok(Some(ControlMessage::FilesAvailable { enabled })) => {
+                        crate::files::on_peer(&files, enabled);
                     }
                     Ok(Some(ControlMessage::AudioRequest { enabled })) => {
                         if enabled && cfg.audio && audio.is_none() {
@@ -588,6 +593,7 @@ pub(crate) async fn run(
             Ok(Some((new_conn, new_ctl))) => {
                 conn = new_conn;
                 ctl = new_ctl;
+                files = crate::files::start(&conn, &cfg, &mut ctl).await;
                 peer_gone = false;
                 while recovered_rx.try_recv().is_ok() {}
                 wctl.force_idr.store(true, Ordering::Relaxed);

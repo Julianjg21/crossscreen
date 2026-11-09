@@ -5,8 +5,8 @@
 //! puerto base del receptor más `i`. Así se reutiliza entero el camino de un
 //! monitor (reconexión, FEC, cursor, entrada) sin tocar el protocolo.
 //!
-//! Lo que es único por equipo (portapapeles y audio del sistema) viaja solo
-//! con el primer monitor; la entrada remota va con cada uno (cada visor
+//! Lo que es único por equipo (portapapeles, audio del sistema y archivos)
+//! viaja solo con el primer monitor; la entrada remota va con cada uno (cada visor
 //! controla su propio monitor).
 
 use crate::SenderConfig;
@@ -30,6 +30,7 @@ pub fn monitor_config(base: &SenderConfig, index: u8) -> SenderConfig {
     if index > 0 {
         cfg.clipboard = false;
         cfg.audio = false;
+        cfg.files = None;
     }
     if let Some(r) = cfg.reconnect.as_mut() {
         if let Some(a) = monitor_addr(r.addr, index) {

@@ -104,6 +104,17 @@ Por defecto se transmite **un** monitor. Para extender el escritorio con varios 
 
 El portapapeles y el audio viajan solo con el primer monitor; el ratón y el teclado funcionan en todos. En Windows, el driver de monitor virtual debe tener al menos tantos monitores como pidas: se ajusta una vez en su configuración (`monitors` → `count`, con permisos de administrador). Si no hay bastantes, el panel lo dice antes de conectar. En Linux (GNOME) no hace falta configurar nada.
 
+## Archivos (opcional)
+
+Por defecto no se pasan archivos. Para enviar y recibir archivos durante una transmisión:
+- **Emisor:** marca «Permitir enviar y recibir archivos» (o `--files` en `crossscreen stream`; `--send-file RUTA` los envía al conectar). Durante la transmisión, arrastra archivos a la ventana del panel.
+- **Receptor:** marca la misma casilla en «Recibir pantalla» (o `--files` en `crossscreen-viewer`). Suelta archivos sobre la ventana del visor para enviarlos al emisor.
+
+Hacen falta las dos casillas.
+- **Dónde se guardan:** en `Descargas/CrossScreen`. Nunca se sobrescribe nada (`foto (1).png`) y nunca se abren solos; en Windows quedan marcados como descargados de Internet.
+- **Límites:** hasta 16 GiB por archivo, sin carpetas (comprímelas antes). La velocidad se limita a ~6 MB/s para no cortar la imagen.
+- **Wayland:** en Linux con Wayland aún no se pueden soltar archivos sobre el visor; sí se reciben.
+
 ## Audio (opcional)
 
 Por defecto solo se transmite la imagen. Para oír en el receptor lo que suena en el emisor:

@@ -16,6 +16,7 @@ cs-core.workspace = true
 cs-protocol.workspace = true
 cs-clipboard = { path = "../../crates/cs-clipboard" }
 cs-audio = { path = "../../crates/cs-audio" }
+cs-files.workspace = true
 cs-security.workspace = true
 cs-transport.workspace = true
 cs-discovery.workspace = true

@@ -205,6 +205,7 @@ impl ListenApp {
             clipboard: self.args.clipboard,
             audio: self.args.audio,
             announce: !self.args.no_announce,
+            files: self.args.files,
         };
         self.net = Some(net::spawn(cfg, self.proxy.clone(), cmd_rx)?);
         self.net_cmd = Some(cmd_tx);
@@ -483,6 +484,19 @@ impl ApplicationHandler<UserEvent> for ListenApp {
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.request_shutdown(el),
+            // Archivos soltados en la ventana (ADR-0010). En Wayland winit
+            // aún no entrega este evento: allí se envían desde el emisor.
+            WindowEvent::DroppedFile(path) => {
+                if !self.args.files {
+                    cs_log::err_out!(
+                        "transferencia de archivos desactivada en este visor; no se envía {}",
+                        path.display()
+                    );
+                } else if let Some(tx) = &self.net_cmd {
+                    cs_log::out!("enviando {} a la fuente…", path.display());
+                    let _ = tx.send(UiCmd::SendFile(path));
+                }
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && event.logical_key == Key::Named(NamedKey::Escape) =>

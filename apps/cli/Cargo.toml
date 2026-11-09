@@ -12,6 +12,7 @@ name = "crossscreen"
 path = "src/main.rs"
 
 [dependencies]
+cs-files.workspace = true
 cs-core.workspace = true
 cs-protocol.workspace = true
 cs-security.workspace = true

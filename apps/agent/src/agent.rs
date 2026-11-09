@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use cs_core::Roles;
 use cs_discovery::{Announcement, DiscoveredPeer, Discovery, DiscoveryEvent};
 use cs_ipc::{
-    AgentStatus, DiscoveredDevice, DisplayInfo, ErrorCode, Event, Handler, HandlerFuture,
-    IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo,
+    AgentStatus, DiscoveredDevice, DisplayInfo, ErrorCode, Event, FileTransferInfo, Handler,
+    HandlerFuture, IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo,
     ReceiverAutoStartInfo, ReceiverSessionInfo, Request, Response, SettingsInfo, StreamModeInfo,
     StreamProfileInfo, StreamReportInfo, StreamSessionInfo, IPC_VERSION,
 };
@@ -42,6 +42,8 @@ struct PairingListener {
 struct ActiveStream {
     session: StreamSessionInfo,
     stop: tokio::sync::watch::Sender<bool>,
+    /// Cola de archivos hacia el receptor (si se activó la transferencia).
+    files: Option<tokio::sync::mpsc::UnboundedSender<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -268,6 +270,7 @@ impl Agent {
                 accept_input,
                 audio,
                 monitors,
+                files,
             } => {
                 self.start_stream(
                     &addr,
@@ -280,6 +283,7 @@ impl Agent {
                     accept_input,
                     audio,
                     monitors,
+                    files,
                 )
                 .await
             }
@@ -290,10 +294,12 @@ impl Agent {
                 clipboard,
                 audio,
                 screens,
+                files,
             } => {
-                self.start_receiver(port, fullscreen, clipboard, audio, screens)
+                self.start_receiver(port, fullscreen, clipboard, audio, screens, files)
                     .await
             }
+            Request::SendFiles { paths } => self.send_files(paths).await,
             Request::StopReceiver => self.stop_receiver().await,
             Request::InstallOpenH264 => self.install_openh264().await,
             Request::GetSettings => Ok(Response::Settings(self.settings_info())),
@@ -387,7 +393,14 @@ impl Agent {
             return;
         };
         match self
-            .start_receiver(r.port, r.fullscreen, r.clipboard, r.audio, r.screens)
+            .start_receiver(
+                r.port,
+                r.fullscreen,
+                r.clipboard,
+                r.audio,
+                r.screens,
+                r.files,
+            )
             .await
         {
             Ok(_) => tracing::info!(port = r.port, "recepción automática al arrancar"),
@@ -654,6 +667,7 @@ impl Agent {
         accept_input: Option<bool>,
         audio: bool,
         monitors: u8,
+        files: bool,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -744,6 +758,23 @@ impl Agent {
         cfg.bitrate_kbps = bitrate_kbps;
         cfg.clipboard = clipboard;
         cfg.audio = audio;
+        // Archivos (ADR-0010): cola de salida y eventos hacia el panel.
+        let files_tx = if files {
+            let inbox = cs_files::inbox_dir().ok_or_else(|| {
+                failed("No se encontró la carpeta de Descargas para guardar los archivos recibidos")
+            })?;
+            let (handle, tx, mut events) = cs_files::FilesHandle::new(inbox);
+            cfg.files = Some(handle);
+            let agent = self.clone();
+            tokio::spawn(async move {
+                while let Some(ev) = events.recv().await {
+                    agent.emit(Event::FileTransfer(file_info(ev)));
+                }
+            });
+            Some(tx)
+        } else {
+            None
+        };
         // Control remoto de este equipo: siempre explícito (por defecto solo
         // se transmite la imagen).
         cfg.accept_input = accept_input.unwrap_or(false);
@@ -814,6 +845,7 @@ impl Agent {
             initial_rtt_us: first.rtt().as_micros() as u64,
             started_at,
             monitors,
+            files,
         };
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         {
@@ -828,6 +860,7 @@ impl Agent {
             st.active = Some(ActiveStream {
                 session: session.clone(),
                 stop: stop_tx,
+                files: files_tx,
             });
         }
         tracing::info!(
@@ -919,6 +952,44 @@ impl Agent {
         Ok(Response::Ok)
     }
 
+    /// Encola archivos para el receptor de la transmisión en curso.
+    async fn send_files(&self, paths: Vec<String>) -> Result<Response, IpcError> {
+        let tx = {
+            let st = self.stream.lock().await;
+            let Some(active) = st.active.as_ref() else {
+                return Err(err(
+                    ErrorCode::NotFound,
+                    "No hay ninguna transmisión en curso",
+                ));
+            };
+            active.files.clone().ok_or_else(|| {
+                err(
+                    ErrorCode::BadRequest,
+                    "Esta transmisión no tiene activada la transferencia de archivos",
+                )
+            })?
+        };
+        if paths.is_empty() {
+            return Err(err(ErrorCode::BadRequest, "No hay archivos que enviar"));
+        }
+        let mut checked = Vec::with_capacity(paths.len());
+        for p in &paths {
+            let path = PathBuf::from(p);
+            if !path.is_absolute() || !path.is_file() {
+                return Err(err(
+                    ErrorCode::BadRequest,
+                    format!("No es un archivo que se pueda enviar: {p}"),
+                ));
+            }
+            checked.push(path);
+        }
+        for path in checked {
+            tracing::info!(path = %path.display(), "archivo en cola para el receptor");
+            let _ = tx.send(path);
+        }
+        Ok(Response::Ok)
+    }
+
     async fn stop_stream(&self) -> Result<Response, IpcError> {
         let stop = {
             let st = self.stream.lock().await;
@@ -941,6 +1012,7 @@ impl Agent {
         clipboard: bool,
         audio: bool,
         screens: u8,
+        files: bool,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -992,8 +1064,9 @@ impl Agent {
             )
         })?;
         // Un visor por pantalla, en `port + i` (ADR-0009). Con varias, el
-        // visor `i` va al monitor físico `i`. El portapapeles y el audio, que
-        // son del equipo y no de la pantalla, solo los lleva el primero.
+        // visor `i` va al monitor físico `i`. El portapapeles, el audio y los
+        // archivos, que son del equipo y no de la pantalla, solo los lleva el
+        // primero.
         let listen_addr = format!("0.0.0.0:{port}");
         let mut children = Vec::with_capacity(usize::from(screens));
         for i in 0..screens {
@@ -1018,6 +1091,9 @@ impl Agent {
             }
             if clipboard && i == 0 {
                 cmd.arg("--clipboard");
+            }
+            if files && i == 0 {
+                cmd.arg("--files");
             }
             #[cfg(windows)]
             {
@@ -1135,6 +1211,37 @@ async fn connect_receiver(
                 ),
             ))
         }
+    }
+}
+
+/// Evento de `cs-files` → evento IPC.
+fn file_info(ev: cs_files::FileEvent) -> FileTransferInfo {
+    match ev {
+        cs_files::FileEvent::Sent { name, size } => FileTransferInfo {
+            name,
+            incoming: false,
+            size: Some(size),
+            path: None,
+            error: None,
+        },
+        cs_files::FileEvent::Received { name, path, size } => FileTransferInfo {
+            name,
+            incoming: true,
+            size: Some(size),
+            path: Some(path.display().to_string()),
+            error: None,
+        },
+        cs_files::FileEvent::Failed {
+            name,
+            incoming,
+            error,
+        } => FileTransferInfo {
+            name,
+            incoming,
+            size: None,
+            path: None,
+            error: Some(error),
+        },
     }
 }
 

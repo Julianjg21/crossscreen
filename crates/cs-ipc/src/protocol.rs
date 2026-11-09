@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 6 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 7 };
 
 /// Identificador de la compilación (`git describe`), inyectado con la variable
 /// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
@@ -135,6 +135,9 @@ pub enum Request {
         /// El monitor `i` va al puerto del receptor + `i` (ADR-0009).
         #[serde(default)]
         monitors: u8,
+        /// Transferencia de archivos con el receptor (IPC 1.7, ADR-0010).
+        #[serde(default)]
+        files: bool,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -152,12 +155,22 @@ pub enum Request {
         /// en `port`, `port + 1`… 0 o 1: una.
         #[serde(default)]
         screens: u8,
+        /// Transferencia de archivos con el emisor (IPC 1.7): se sueltan
+        /// archivos en la ventana del visor.
+        #[serde(default)]
+        files: bool,
     },
     /// Detiene el visor receptor en curso (si lo hay).
     StopReceiver,
     /// Linux: descarga OpenH264 de Cisco, verifica su SHA-256 y lo instala.
     /// Responde `Status` con el estado actualizado (IPC 1.3).
     InstallOpenH264,
+    /// Envía archivos al receptor de la transmisión en curso (IPC 1.7). Hace
+    /// falta haberla iniciado con `files: true`. Responde `Ok`; el resultado
+    /// de cada archivo llega como evento `FileTransfer`.
+    SendFiles {
+        paths: Vec<String>,
+    },
     /// Ajustes de arranque (IPC 1.4). Responde `Settings`.
     GetSettings,
     /// Cambia los ajustes de arranque (IPC 1.4). Responde `Settings`.
@@ -195,15 +208,43 @@ pub enum Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    PairingPin { pin: String, port: u16 },
+    PairingPin {
+        pin: String,
+        port: u16,
+    },
     PairingResult(PairingOutcome),
     PeersChanged,
     DeviceDiscovered(DiscoveredDevice),
-    DeviceLost { fullname: String },
-    StreamStarted { session: StreamSessionInfo },
-    StreamEnded { report: Box<StreamReportInfo> },
-    ReceiverStarted { receiver: ReceiverSessionInfo },
-    ReceiverEnded { message: Option<String> },
+    DeviceLost {
+        fullname: String,
+    },
+    StreamStarted {
+        session: StreamSessionInfo,
+    },
+    StreamEnded {
+        report: Box<StreamReportInfo>,
+    },
+    ReceiverStarted {
+        receiver: ReceiverSessionInfo,
+    },
+    ReceiverEnded {
+        message: Option<String>,
+    },
+    /// Un archivo enviado o recibido por la transmisión en curso (IPC 1.7).
+    FileTransfer(FileTransferInfo),
+}
+
+/// Resultado de un archivo (IPC 1.7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileTransferInfo {
+    pub name: String,
+    /// `true`: llegó del receptor; `false`: enviado al receptor.
+    pub incoming: bool,
+    /// Bytes, si terminó bien.
+    pub size: Option<u64>,
+    /// Dónde se guardó (solo los recibidos).
+    pub path: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +375,9 @@ pub struct StreamSessionInfo {
     /// Monitores de la sesión (IPC 1.6; 0 en agentes anteriores = 1).
     #[serde(default)]
     pub monitors: u8,
+    /// Transferencia de archivos activa (IPC 1.7).
+    #[serde(default)]
+    pub files: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +436,8 @@ pub struct ReceiverAutoStartInfo {
     pub audio: bool,
     #[serde(default)]
     pub screens: u8,
+    #[serde(default)]
+    pub files: bool,
 }
 
 /// Ajustes de arranque (IPC 1.4).
@@ -465,6 +511,7 @@ mod tests {
                     clipboard: false,
                     audio: false,
                     screens: 0,
+                    files: false,
                 }),
             }
         );
@@ -544,6 +591,7 @@ mod tests {
                 accept_input: Some(false),
                 audio: false,
                 monitors: 2,
+                files: true,
             },
             Request::StopStream,
             Request::StartReceiver {
@@ -552,6 +600,10 @@ mod tests {
                 clipboard: false,
                 audio: true,
                 screens: 2,
+                files: false,
+            },
+            Request::SendFiles {
+                paths: vec!["C:\\datos\\informe.pdf".into()],
             },
             Request::StopReceiver,
             Request::Shutdown,
@@ -643,6 +695,15 @@ mod tests {
                     fullname: "x".into(),
                 },
             },
+            AgentMessage::Event {
+                event: Event::FileTransfer(FileTransferInfo {
+                    name: "foto.png".into(),
+                    incoming: true,
+                    size: Some(1234),
+                    path: Some("/home/ana/Descargas/CrossScreen/foto.png".into()),
+                    error: None,
+                }),
+            },
             AgentMessage::Response {
                 id: 11,
                 result: Ok(Response::StreamStarted {
@@ -658,6 +719,7 @@ mod tests {
                         initial_rtt_us: 12_500,
                         started_at: 1_700_000_100,
                         monitors: 2,
+                        files: true,
                     },
                 }),
             },

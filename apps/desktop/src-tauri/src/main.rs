@@ -277,6 +277,25 @@ fn open_logs_dir() -> Result<String, CmdError> {
     Ok(dir.display().to_string())
 }
 
+/// Abre la carpeta de archivos recibidos (Descargas/CrossScreen) y devuelve
+/// su ruta.
+#[tauri::command]
+fn open_files_dir() -> Result<String, CmdError> {
+    let dir = cs_files::inbox_dir()
+        .ok_or_else(|| CmdError::local("No se pudo determinar la carpeta de Descargas"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| CmdError::local(format!("No se pudo crear {}: {e}", dir.display())))?;
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(not(windows))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| CmdError::local(format!("No se pudo abrir {}: {e}", dir.display())))?;
+    Ok(dir.display().to_string())
+}
+
 /// Lanza el agente en segundo plano y espera a que acepte conexiones.
 #[tauri::command]
 async fn start_agent(app: AppHandle, conn: State<'_, AgentConn>) -> Result<AgentInfo, CmdError> {
@@ -291,7 +310,8 @@ fn main() {
             agent_connect,
             agent_request,
             start_agent,
-            open_logs_dir
+            open_logs_dir,
+            open_files_dir
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -88,6 +88,8 @@ pub enum UiCmd {
     Shutdown,
     /// Evento de entrada local (ratón o teclado) para enviar a la fuente.
     Input(cs_protocol::control::InputEvent),
+    /// Archivo soltado en la ventana: enviarlo a la fuente (ADR-0010).
+    SendFile(std::path::PathBuf),
 }
 
 /// Entrada del hilo de decodificación (en orden de llegada).

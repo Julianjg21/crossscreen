@@ -16,3 +16,4 @@ Un ADR aceptado no se edita: si la decisión cambia, se escribe uno nuevo que lo
 | [0007](0007-monitor-virtual-linux.md) | Monitor virtual en Linux: backends por compositor con EVDI de respaldo | Propuesta, validar con la PoC-7 |
 | [0008](0008-audio.md) | Audio del sistema con Opus en Rust puro, opcional y negociado | Aceptada |
 | [0009](0009-varios-monitores.md) | Varios monitores por sesión como sesiones paralelas | Aceptada |
+| [0010](0010-transferencia-de-archivos.md) | Transferencia de archivos por streams QUIC, opcional en los dos lados | Aceptada |
