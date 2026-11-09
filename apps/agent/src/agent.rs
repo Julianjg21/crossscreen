@@ -7,8 +7,8 @@ use cs_discovery::{Announcement, DiscoveredPeer, Discovery, DiscoveryEvent};
 use cs_ipc::{
     AgentStatus, DiscoveredDevice, DisplayInfo, ErrorCode, Event, Handler, HandlerFuture,
     IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo,
-    ReceiverSessionInfo, Request, Response, StreamModeInfo, StreamProfileInfo, StreamReportInfo,
-    StreamSessionInfo, IPC_VERSION,
+    ReceiverAutoStartInfo, ReceiverSessionInfo, Request, Response, SettingsInfo, StreamModeInfo,
+    StreamProfileInfo, StreamReportInfo, StreamSessionInfo, IPC_VERSION,
 };
 use cs_protocol::{ALPN, ALPN_PAIRING, PROTOCOL_VERSION};
 use cs_security::identity::Identity;
@@ -285,6 +285,11 @@ impl Agent {
             } => self.start_receiver(port, fullscreen, clipboard).await,
             Request::StopReceiver => self.stop_receiver().await,
             Request::InstallOpenH264 => self.install_openh264().await,
+            Request::GetSettings => Ok(Response::Settings(self.settings_info())),
+            Request::SetSettings {
+                autostart,
+                receiver_on_start,
+            } => self.set_settings(autostart, receiver_on_start),
             Request::Shutdown => self.handle_shutdown_request().await,
         }
     }
@@ -316,6 +321,63 @@ impl Agent {
             log_file: self.log_file.as_ref().map(|p| p.display().to_string()),
             openh264_required: cfg!(not(windows)),
             openh264_path: openh264_path(),
+        }
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.dir.join("agent-settings.json")
+    }
+
+    /// Ajustes guardados (los ausentes o corruptos valen por defecto).
+    fn load_settings(&self) -> AgentSettings {
+        std::fs::read(self.settings_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    fn settings_info(&self) -> SettingsInfo {
+        SettingsInfo {
+            autostart: crate::autostart::is_enabled(),
+            autostart_supported: crate::autostart::supported(),
+            receiver_on_start: self.load_settings().receiver_on_start,
+        }
+    }
+
+    fn set_settings(
+        &self,
+        autostart: bool,
+        receiver_on_start: Option<ReceiverAutoStartInfo>,
+    ) -> Result<Response, IpcError> {
+        if let Some(r) = &receiver_on_start {
+            if r.port == 0 {
+                return Err(err(ErrorCode::BadRequest, "Puerto de recepción no válido"));
+            }
+        }
+        if autostart != crate::autostart::is_enabled() {
+            crate::autostart::set(autostart).map_err(|e| failed(format!("{e:#}")))?;
+        }
+        let settings = AgentSettings { receiver_on_start };
+        let json = serde_json::to_vec_pretty(&settings).map_err(|e| failed(e.to_string()))?;
+        let path = self.settings_path();
+        std::fs::write(&path, json)
+            .map_err(|e| failed(format!("No se pudo guardar {}: {e}", path.display())))?;
+        tracing::info!(
+            autostart,
+            ?receiver_on_start,
+            "ajustes de arranque guardados"
+        );
+        Ok(Response::Settings(self.settings_info()))
+    }
+
+    /// Al arrancar: si está activada la recepción automática, abrir el visor.
+    pub async fn apply_startup_settings(self: &Arc<Self>) {
+        let Some(r) = self.load_settings().receiver_on_start else {
+            return;
+        };
+        match self.start_receiver(r.port, r.fullscreen, r.clipboard).await {
+            Ok(_) => tracing::info!(port = r.port, "recepción automática al arrancar"),
+            Err(e) => tracing::warn!("no se pudo iniciar la recepción automática: {}", e.message),
         }
     }
 
@@ -1203,4 +1265,11 @@ fn openh264_path() -> Option<String> {
     {
         None
     }
+}
+
+/// Ajustes de arranque guardados en `agent-settings.json`.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct AgentSettings {
+    #[serde(default)]
+    receiver_on_start: Option<ReceiverAutoStartInfo>,
 }

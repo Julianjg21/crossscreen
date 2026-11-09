@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 3 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 4 };
 
 /// Identificador de la compilación (`git describe`), inyectado con la variable
 /// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
@@ -144,6 +144,15 @@ pub enum Request {
     /// Linux: descarga OpenH264 de Cisco, verifica su SHA-256 y lo instala.
     /// Responde `Status` con el estado actualizado (IPC 1.3).
     InstallOpenH264,
+    /// Ajustes de arranque (IPC 1.4). Responde `Settings`.
+    GetSettings,
+    /// Cambia los ajustes de arranque (IPC 1.4). Responde `Settings`.
+    SetSettings {
+        /// Iniciar el agente al iniciar sesión.
+        autostart: bool,
+        /// Al arrancar el agente, quedar escuchando como pantalla receptora.
+        receiver_on_start: Option<ReceiverAutoStartInfo>,
+    },
     /// Pide al agente que termine (p. ej. para sustituirlo por el de otra
     /// build). Falla con `Busy` si hay una transmisión o recepción en curso.
     Shutdown,
@@ -154,6 +163,7 @@ pub enum Request {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
     Status(AgentStatus),
+    Settings(SettingsInfo),
     Identity(IdentityInfo),
     Peers { peers: Vec<PeerInfo> },
     Ok,
@@ -348,6 +358,25 @@ pub struct StreamReportInfo {
     pub error: Option<String>,
 }
 
+/// Recepción automática al arrancar el agente (IPC 1.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiverAutoStartInfo {
+    pub port: u16,
+    pub fullscreen: bool,
+    #[serde(default)]
+    pub clipboard: bool,
+}
+
+/// Ajustes de arranque (IPC 1.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsInfo {
+    /// El agente se inicia al iniciar sesión.
+    pub autostart: bool,
+    /// Se puede activar en esta instalación (no con el AppImage).
+    pub autostart_supported: bool,
+    pub receiver_on_start: Option<ReceiverAutoStartInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiverSessionInfo {
     pub listen_addr: String,
@@ -387,6 +416,35 @@ impl IpcError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn settings_wire_format_matches_panel() {
+        let j = serde_json::to_string(&Request::GetSettings).unwrap();
+        assert_eq!(j, r#"{"kind":"get_settings"}"#);
+        let req: Request = serde_json::from_str(
+            r#"{"kind":"set_settings","autostart":true,"receiver_on_start":{"port":47810,"fullscreen":true,"clipboard":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            req,
+            Request::SetSettings {
+                autostart: true,
+                receiver_on_start: Some(ReceiverAutoStartInfo {
+                    port: 47810,
+                    fullscreen: true,
+                    clipboard: false
+                }),
+            }
+        );
+        let r = serde_json::to_value(Response::Settings(SettingsInfo {
+            autostart: false,
+            autostart_supported: true,
+            receiver_on_start: None,
+        }))
+        .unwrap();
+        assert_eq!(r["kind"], "settings");
+        assert_eq!(r["autostart_supported"], true);
+    }
 
     #[test]
     fn install_openh264_wire_name_matches_panel() {

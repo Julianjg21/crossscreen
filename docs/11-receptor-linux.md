@@ -95,6 +95,14 @@ Al terminar, el visor imprime un resumen. Mándamelo, junto con:
 
 Las líneas clave del resumen son "espera en cola antes de decodificar", "decode (OpenH264, CPU)", "reensamblado→Present" y "saltados por retraso en cola". Si la CPU no da abasto, el visor salta frames en vez de acumular retraso; el contador lo indica.
 
+## Encender y usar (arranque automático)
+
+En el panel, **Este equipo → Inicio**:
+- **Iniciar CrossScreen al iniciar sesión**: el agente arranca en segundo plano, sin ventana.
+- **Quedar listo para recibir pantalla al iniciar**: abre el visor receptor (pantalla completa, puerto 47810) en cuanto arranca el agente.
+
+Con las dos activadas, el equipo funciona como pantalla nada más encenderlo: el otro equipo puede transmitirle sin abrir el panel. Se desactivan desde el mismo sitio. En Linux no está disponible con el AppImage (usa el `.deb`).
+
 ## Registros (logs) para diagnosticar
 
 Cada programa (panel, agente, visor y `crossscreen`) guarda un archivo por ejecución en:

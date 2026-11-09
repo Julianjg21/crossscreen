@@ -6,8 +6,15 @@
 //!
 //! Una sola instancia por usuario: si el punto IPC ya existe, sale con código 2.
 //! `--probe` actúa como cliente de diagnóstico de un agente ya en ejecución.
+//!
+//! En Windows (release) es una aplicación sin consola: al arrancar con la
+//! sesión no aparece ninguna ventana. Si se lanza desde una terminal, se
+//! engancha a su consola para que la salida se vea igualmente.
+
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod agent;
+mod autostart;
 mod probe;
 
 use anyhow::{Context, Result};
@@ -39,7 +46,19 @@ struct Args {
     log: String,
 }
 
+/// Windows: usar la consola de la terminal que lanzó el agente, si la hay
+/// (sin consola propia no se vería `--help`, `--probe` ni los avisos).
+#[cfg(windows)]
+#[allow(unsafe_code)] // FFI Win32 mínima, sin punteros.
+fn attach_parent_console() {
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
+    // SAFETY: sin argumentos de memoria; si no hay consola padre, falla y no pasa nada.
+    let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
     let args = Args::parse();
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -103,6 +122,7 @@ async fn run(args: Args) -> Result<i32> {
 
     let name = args.name.unwrap_or_else(default_name);
     let agent = agent::Agent::start(dir.clone(), name, log_file.clone())?;
+    agent.apply_startup_settings().await;
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         endpoint = %ep,

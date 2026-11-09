@@ -122,6 +122,20 @@ export interface StreamReportInfo {
   error: string | null;
 }
 
+/** IPC 1.4: recepción automática al arrancar el agente. */
+export interface ReceiverAutoStartInfo {
+  port: number;
+  fullscreen: boolean;
+  clipboard: boolean;
+}
+
+/** IPC 1.4: ajustes de arranque. */
+export interface SettingsInfo {
+  autostart: boolean;
+  autostart_supported: boolean;
+  receiver_on_start: ReceiverAutoStartInfo | null;
+}
+
 export interface ReceiverSessionInfo {
   listen_addr: string;
   port: number;
@@ -156,10 +170,17 @@ export type Request =
   | { kind: "stop_stream" }
   | { kind: "start_receiver"; port: number; fullscreen: boolean; clipboard: boolean }
   | { kind: "stop_receiver" }
-  | { kind: "install_open_h264" };
+  | { kind: "install_open_h264" }
+  | { kind: "get_settings" }
+  | {
+      kind: "set_settings";
+      autostart: boolean;
+      receiver_on_start: ReceiverAutoStartInfo | null;
+    };
 
 export type Response =
   | ({ kind: "status" } & AgentStatus)
+  | ({ kind: "settings" } & SettingsInfo)
   | ({ kind: "identity" } & IdentityInfo)
   | { kind: "peers"; peers: PeerInfo[] }
   | { kind: "ok" }

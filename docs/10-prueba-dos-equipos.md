@@ -105,6 +105,14 @@ Al terminar, **cada lado imprime un resumen**. Cópialo de los dos equipos, indi
 .\crossscreen.exe bench 192.168.1.50:47800 --peer <prefijo> --mbps 50 --seconds 10
 ```
 
+## Encender y usar (arranque automático)
+
+En el panel, **Este equipo → Inicio**:
+- **Iniciar CrossScreen al iniciar sesión**: el agente arranca en segundo plano, sin ventana.
+- **Quedar listo para recibir pantalla al iniciar**: abre el visor receptor (pantalla completa, puerto 47810) en cuanto arranca el agente.
+
+Con las dos activadas, el equipo funciona como pantalla nada más encenderlo: el otro equipo puede transmitirle sin abrir el panel. Se desactivan desde el mismo sitio. En Linux no está disponible con el AppImage (usa el `.deb`).
+
 ## Registros (logs) para diagnosticar
 
 Cada programa de CrossScreen (panel, agente, visor y `crossscreen`) guarda un archivo por ejecución en:
