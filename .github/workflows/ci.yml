@@ -49,10 +49,9 @@ jobs:
       - name: Dependencias del sistema (ventana X11/Wayland y PipeWire)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libpipewire-0.3-dev libclang-dev libclang-14-dev
-          LIBCLANG_DIR="$(dirname "$(find /usr/lib -name 'libclang.so*' -type f -print -quit)")"
-          echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$LIBCLANG_DIR:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libpipewire-0.3-dev clang llvm-14-dev libclang-14-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-14/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/usr/lib/llvm-14/lib:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
       # El emisor Linux usa Portal/PipeWire y OpenH264 por software; el modo
       # extender y la entrada/portapapeles siguen siendo trabajo posterior.
       - name: Clippy y tests
