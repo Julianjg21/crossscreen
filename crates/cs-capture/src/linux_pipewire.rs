@@ -153,12 +153,10 @@ fn run_i420(
             let Some(data) = buffer.datas_mut().first_mut() else {
                 return;
             };
+            let size = data.chunk().size() as usize;
             let first = data
                 .data()
-                .map(|slice| {
-                    let size = data.chunk().size() as usize;
-                    slice[..size.min(slice.len())].to_vec()
-                })
+                .map(|slice| slice[..size.min(slice.len())].to_vec())
                 .unwrap_or_default();
             if first.is_empty() {
                 return;
