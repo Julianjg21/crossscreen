@@ -26,6 +26,11 @@ windows = { version = "0.58", features = [
 
 [target.'cfg(not(windows))'.dependencies]
 openh264 = { version = "0.9", default-features = false, features = ["libloading"] }
+# Instalación de OpenH264 desde el panel: HTTP sin TLS (la integridad la da
+# el SHA-256 fijado) y descompresión bzip2 en Rust puro.
+ureq = { version = "2", default-features = false }
+bzip2-rs = "0.1"
+sha2.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

@@ -51,11 +51,14 @@ cd crossscreen-*-linux-x64
 sha256sum -c SHA256SUMS.txt
 ```
 
-## 3. Descargar el decodificador de Cisco (una vez)
+## 3. Descargar el códec de Cisco (una vez)
+**Con el panel:** en «Transmitir o recibir pantalla» aparece el aviso «Falta el códec H.264»; pulsa **Descargar e instalar OpenH264**.
+
+**Por consola** (paquete `.tar.gz`; con el `.deb` el script está en `/usr/lib/CrossScreen/`):
 ```bash
 ./fetch-openh264.sh
 ```
-Descarga `libopenh264-2.6.0-linux64.8.so` del servidor oficial de Cisco, verifica su SHA-256 y lo deja en `~/.local/share/crossscreen/`. No va incluido en el paquete por la licencia de patentes de H.264: al usar el binario de Cisco, la licencia la cubre Cisco.
+Cualquiera de los dos descarga `libopenh264-2.6.0-linux64.8.so` del servidor oficial de Cisco, verifica su SHA-256 y lo deja en `~/.local/share/crossscreen/`. No va incluido en el paquete por la licencia de patentes de H.264: al usar el binario de Cisco, la licencia la cubre Cisco.
 
 ## 4. Emparejar con el PC Windows (una vez)
 1. **En Linux** (muestra un PIN):

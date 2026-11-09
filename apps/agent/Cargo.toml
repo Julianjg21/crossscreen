@@ -28,5 +28,9 @@ tracing.workspace = true
 serde_json = "1"
 directories = "5"
 
+[target.'cfg(not(windows))'.dependencies]
+# Instalación de OpenH264 desde el panel.
+cs-encode = { path = "../../crates/cs-encode" }
+
 [lints]
 workspace = true

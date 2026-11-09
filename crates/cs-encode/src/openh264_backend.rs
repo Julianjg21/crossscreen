@@ -190,7 +190,7 @@ impl VideoEncoder for OpenH264Encoder {
     }
 }
 
-fn locate_blob() -> Result<PathBuf> {
+pub(crate) fn locate_blob() -> Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os(OPENH264_ENV) {
         candidates.push(PathBuf::from(path));

@@ -284,6 +284,7 @@ impl Agent {
                 clipboard,
             } => self.start_receiver(port, fullscreen, clipboard).await,
             Request::StopReceiver => self.stop_receiver().await,
+            Request::InstallOpenH264 => self.install_openh264().await,
             Request::Shutdown => self.handle_shutdown_request().await,
         }
     }
@@ -313,6 +314,29 @@ impl Agent {
             active_receiver,
             data_dir: self.dir.display().to_string(),
             log_file: self.log_file.as_ref().map(|p| p.display().to_string()),
+            openh264_required: cfg!(not(windows)),
+            openh264_path: openh264_path(),
+        }
+    }
+
+    /// Descarga OpenH264 de Cisco y lo instala (solo Linux).
+    async fn install_openh264(&self) -> Result<Response, IpcError> {
+        #[cfg(not(windows))]
+        {
+            tracing::info!("instalando OpenH264 de Cisco a petición del panel");
+            match tokio::task::spawn_blocking(cs_encode::openh264_install::install).await {
+                Ok(Ok(path)) => tracing::info!("OpenH264 instalado en {}", path.display()),
+                Ok(Err(e)) => return Err(failed(e.to_string())),
+                Err(e) => return Err(failed(format!("instalación interrumpida: {e}"))),
+            }
+            Ok(Response::Status(self.status().await))
+        }
+        #[cfg(windows)]
+        {
+            Err(err(
+                ErrorCode::Unsupported,
+                "En Windows no hace falta OpenH264: se usa el codificador del sistema",
+            ))
         }
     }
 
@@ -1166,5 +1190,17 @@ mod displays {
             Ok(Response::DisplaysHidden { count })
         })
         .await
+    }
+}
+
+/// Ruta de OpenH264 si está instalado (solo se usa en Linux).
+fn openh264_path() -> Option<String> {
+    #[cfg(not(windows))]
+    {
+        cs_encode::openh264_install::installed_path().map(|p| p.display().to_string())
+    }
+    #[cfg(windows)]
+    {
+        None
     }
 }

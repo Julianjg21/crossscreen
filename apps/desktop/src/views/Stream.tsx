@@ -77,6 +77,11 @@ export default function Stream({
   const [mode, setMode] = useState<StreamModeInfo>("extend");
   const [profile, setProfile] = useState<StreamProfileInfo>("auto");
   const [clipboard, setClipboard] = useState(false);
+  // OpenH264 de Cisco (Linux): hace falta para transmitir y para recibir.
+  const [codecPath, setCodecPath] = useState<string | null>(status.openh264_path ?? null);
+  const [codecBusy, setCodecBusy] = useState(false);
+  const [codecError, setCodecError] = useState<string | null>(null);
+  const codecMissing = !!status.openh264_required && !codecPath;
   // Control remoto de este equipo: sí por defecto en Windows; en Linux hay
   // que activarlo (al extender, GNOME no pide confirmación).
   const [allowInput, setAllowInput] = useState(status.platform !== "linux");
@@ -210,6 +215,19 @@ export default function Stream({
     );
   }
 
+  const installCodec = async () => {
+    setCodecBusy(true);
+    setCodecError(null);
+    try {
+      const s = await call({ kind: "install_open_h264" }, "status");
+      setCodecPath(s.openh264_path ?? null);
+    } catch (e) {
+      setCodecError(errorMessage(e));
+    } finally {
+      setCodecBusy(false);
+    }
+  };
+
   const start = async (ev: FormEvent) => {
     ev.preventDefault();
     setError(null);
@@ -309,6 +327,31 @@ export default function Stream({
         Extiende el escritorio de este PC hacia otro equipo emparejado, o convierte este equipo en
         pantalla receptora con un clic.
       </p>
+
+      {codecMissing && (
+        <div className="alert info" role="status">
+          <p style={{ margin: 0 }}>
+            <strong>Falta el códec H.264 (OpenH264 de Cisco).</strong> Hace falta para transmitir y
+            para recibir en Linux. Se descarga de Cisco (ciscobinary.openh264.org), se comprueba su
+            firma SHA-256 y se instala solo para tu usuario; la licencia de patentes de H.264 la
+            cubre Cisco.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            style={{ marginTop: 8 }}
+            onClick={() => void installCodec()}
+            disabled={codecBusy}
+          >
+            {codecBusy ? "Descargando…" : "Descargar e instalar OpenH264"}
+          </button>
+          {codecError && (
+            <p className="alert error" role="alert" style={{ marginTop: 8 }}>
+              {codecError}
+            </p>
+          )}
+        </div>
+      )}
 
       {error && (
         <p className="alert error" role="alert">

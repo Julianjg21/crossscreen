@@ -22,6 +22,9 @@ export interface AgentStatus {
   active_receiver: ReceiverSessionInfo | null;
   data_dir: string;
   log_file: string | null;
+  /** IPC 1.3: hace falta OpenH264 de Cisco (Linux) y dónde está instalado. */
+  openh264_required?: boolean;
+  openh264_path?: string | null;
 }
 
 export interface IdentityInfo {
@@ -152,7 +155,8 @@ export type Request =
     }
   | { kind: "stop_stream" }
   | { kind: "start_receiver"; port: number; fullscreen: boolean; clipboard: boolean }
-  | { kind: "stop_receiver" };
+  | { kind: "stop_receiver" }
+  | { kind: "install_open_h264" };
 
 export type Response =
   | ({ kind: "status" } & AgentStatus)

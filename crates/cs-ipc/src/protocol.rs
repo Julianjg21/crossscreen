@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 2 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 3 };
 
 /// Identificador de la compilación (`git describe`), inyectado con la variable
 /// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
@@ -141,6 +141,9 @@ pub enum Request {
     },
     /// Detiene el visor receptor en curso (si lo hay).
     StopReceiver,
+    /// Linux: descarga OpenH264 de Cisco, verifica su SHA-256 y lo instala.
+    /// Responde `Status` con el estado actualizado (IPC 1.3).
+    InstallOpenH264,
     /// Pide al agente que termine (p. ej. para sustituirlo por el de otra
     /// build). Falla con `Busy` si hay una transmisión o recepción en curso.
     Shutdown,
@@ -206,6 +209,12 @@ pub struct AgentStatus {
     pub active_receiver: Option<ReceiverSessionInfo>,
     pub data_dir: String,
     pub log_file: Option<String>,
+    /// En esta plataforma hace falta OpenH264 de Cisco (Linux) (IPC 1.3).
+    #[serde(default)]
+    pub openh264_required: bool,
+    /// Ruta de OpenH264 si está instalado.
+    #[serde(default)]
+    pub openh264_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +387,14 @@ impl IpcError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn install_openh264_wire_name_matches_panel() {
+        // El panel (api.ts) envía exactamente este "kind".
+        let j = serde_json::to_string(&Request::InstallOpenH264).unwrap();
+        assert_eq!(j, r#"{"kind":"install_open_h264"}"#);
+    }
+
     use super::*;
 
     fn roundtrip<T>(v: &T)
@@ -633,6 +650,8 @@ mod tests {
             active_receiver: None,
             data_dir: "d".into(),
             log_file: None,
+            openh264_required: false,
+            openh264_path: None,
         }))
         .unwrap();
         assert!(s.starts_with(r#"{"kind":"status","agent_version":"1""#));

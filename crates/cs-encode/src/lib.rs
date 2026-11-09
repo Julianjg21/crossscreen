@@ -19,6 +19,8 @@ pub mod h264;
 pub mod mf;
 #[cfg(not(windows))]
 pub mod openh264_backend;
+#[cfg(not(windows))]
+pub mod openh264_install;
 
 use std::time::Duration;
 
