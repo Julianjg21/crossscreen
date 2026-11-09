@@ -70,7 +70,7 @@ Cómo está hecho:
 - `cs-render` en no-Windows: `wgpu` 25 (Vulkan/GL), tres texturas R8 → RGB BT.709 en shader, cursor superpuesto. `capture_rgba` no implementado.
 - `apps/viewer/src/platform.rs` aísla lo específico de cada SO (contexto de vídeo, renderizador, `FrameRef`). El modo `--file` sigue siendo solo de Windows.
 - `decode_worker`: si un frame no clave lleva más de 250 ms en cola, se salta hasta el siguiente IDR (contador "saltados por retraso en cola") para no acumular retraso cuando la CPU no da abasto.
-- Empaquetado: `scripts/package-linux.sh` (binarios sin símbolos) y job `linux` (ubuntu-22.04, glibc 2.35) en `release.yml`; el job Linux del CI compila y pasa clippy de visor, CLI, `cs-decode` y `cs-render`.
+- Empaquetado: `scripts/package-linux.sh` (binarios sin símbolos) y job `linux` (ubuntu-24.04, headers PipeWire compatibles con los bindings 0.7.x) en `release.yml`; el job Linux del CI compila y pasa clippy de visor, CLI, `cs-decode` y `cs-render`.
 
 Pruebas en WSL2 (Ubuntu 24.04, `llvmpipe`, i5-1235U): decodificación sola 600/600 frames p50 10,9 ms; Windows → WSL 140/140 frames, 0 perdidos; con la cota de cola, espera p50 60 / p95 246 ms y reensamblado→Present p50 108 / p95 281 ms (entorno no representativo: Vulkan por software y CPU compartida). Entorno WSL: distro `Ubuntu-24.04`, repo copiado con `rsync` a `/root/crossscreen`, datos en `/root/csdata`.
 

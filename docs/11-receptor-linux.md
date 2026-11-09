@@ -30,7 +30,7 @@ portapapeles ni inyección de entrada Linux.
 
 Validado también en un Ubuntu real con el flujo Windows → Ubuntu completo. La prueba confirma que el receptor funciona fuera de WSL2; las métricas detalladas de GPU, sesión gráfica y latencia quedan pendientes de documentar por separado.
 
-## 1. Requisitos (Ubuntu 22.04 o 24.04, x86_64)
+## 1. Requisitos (Ubuntu 24.04, x86_64)
 Ubuntu Desktop ya trae casi todo. Si falta algo:
 ```bash
 sudo apt install libvulkan1 mesa-vulkan-drivers libxkbcommon0 libwayland-client0 curl bzip2
