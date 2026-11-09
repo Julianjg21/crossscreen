@@ -148,15 +148,48 @@ fn init_with(component: &str, console_default: &str, file_only: Option<&str>) ->
 
 /// Argumentos para el registro, con los PIN de emparejamiento (6 dígitos,
 /// p. ej. `crossscreen pair <ip> 123456`) ocultos: los registros se comparten.
+///
+/// Dos reglas: (1) lo que `Pin::parse` aceptaría (6 dígitos ignorando
+/// espacios y guiones: `633192`, `633 192`, `633-192`); (2) tras el
+/// subcomando `pair`, todo argumento posicional después de la dirección (por
+/// si el PIN llega partido en varios argumentos).
 fn redact_args(args: impl Iterator<Item = String>) -> Vec<String> {
+    const MASK: &str = "******";
+    let looks_like_pin = |a: &str| {
+        let digits: String = a
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .collect();
+        digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit())
+    };
+    // Posicionales vistos tras `pair` (el primero es la dirección).
+    let mut after_pair: Option<usize> = None;
+    let mut prev_was_flag = false;
     args.map(|a| {
-        if a.len() == 6 && a.bytes().all(|b| b.is_ascii_digit()) {
-            "******".to_owned()
-        } else {
-            a
+        let is_flag = a.starts_with('-') && !looks_like_pin(&a);
+        let positional = !is_flag && !prev_was_flag_value(prev_was_flag, &a);
+        prev_was_flag = is_flag && !a.contains('=');
+        if a == "pair" && after_pair.is_none() {
+            after_pair = Some(0);
+            return a;
         }
+        if looks_like_pin(&a) {
+            return MASK.to_owned();
+        }
+        if let (Some(n), true) = (after_pair.as_mut(), positional) {
+            *n += 1;
+            if *n > 1 {
+                return MASK.to_owned();
+            }
+        }
+        a
     })
     .collect()
+}
+
+/// ¿Es `a` el valor de la opción anterior (`--data-dir RUTA`)?
+fn prev_was_flag_value(prev_was_flag: bool, a: &str) -> bool {
+    prev_was_flag && !a.starts_with('-')
 }
 
 /// Registra el error con el que termina `main` (si lo hay) y lo devuelve.
@@ -287,16 +320,16 @@ mod tests {
 
     #[test]
     fn pin_is_redacted_from_args() {
-        let args = [
-            "crossscreen",
-            "pair",
-            "192.168.1.5:47901",
-            "633192",
-            "--seconds",
-            "60",
-        ];
+        let r = |args: &[&str]| redact_args(args.iter().map(|s| s.to_string()));
         assert_eq!(
-            redact_args(args.iter().map(|s| s.to_string())),
+            r(&[
+                "crossscreen",
+                "pair",
+                "192.168.1.5:47901",
+                "633192",
+                "--seconds",
+                "60"
+            ]),
             [
                 "crossscreen",
                 "pair",
@@ -305,6 +338,35 @@ mod tests {
                 "--seconds",
                 "60"
             ]
+        );
+        // Formatos que también acepta Pin::parse.
+        assert_eq!(r(&["x", "633-192"]), ["x", "******"]);
+        assert_eq!(r(&["x", "633 192"]), ["x", "******"]);
+        // PIN partido en dos argumentos tras `pair <dirección>`.
+        assert_eq!(
+            r(&[
+                "crossscreen",
+                "--data-dir",
+                "/d",
+                "pair",
+                "10.0.0.2:47901",
+                "633",
+                "192"
+            ]),
+            [
+                "crossscreen",
+                "--data-dir",
+                "/d",
+                "pair",
+                "10.0.0.2:47901",
+                "******",
+                "******"
+            ]
+        );
+        // Lo demás se conserva.
+        assert_eq!(
+            r(&["crossscreen", "stream", "10.0.0.2:47810", "--peer", "f15c"]),
+            ["crossscreen", "stream", "10.0.0.2:47810", "--peer", "f15c"]
         );
     }
 
