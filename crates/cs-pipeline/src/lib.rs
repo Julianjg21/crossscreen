@@ -13,6 +13,7 @@
 
 pub mod cursor;
 pub mod display_guard;
+mod reconnect;
 pub mod stats;
 pub mod timing;
 

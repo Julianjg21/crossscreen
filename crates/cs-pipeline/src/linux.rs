@@ -589,18 +589,12 @@ pub(crate) async fn run(
 ) -> Result<SenderReport> {
     let started_at = Instant::now();
     let mut prepared = prepared;
-    let outcome = session(&conn, &cfg, &mut prepared, shutdown).await;
+    let outcome = session(conn, &cfg, &mut prepared, shutdown).await;
     let worker_stats = prepared.release().await;
     drop(prepared);
-    let (end_reason, control, send_task) = match outcome {
-        Ok(v) => v,
-        Err(e) => {
-            conn.close(b"error");
-            return Err(e);
-        }
-    };
+    let (end_reason, control, send_task, conn) = outcome?;
     let send = match send_task {
-        Some(t) => t.await.unwrap_or_default(),
+        Some(t) => t.await.map(|(s, _)| s).unwrap_or_default(),
         None => Default::default(),
     };
     conn.close(b"bye");
@@ -623,14 +617,11 @@ pub(crate) async fn run(
     })
 }
 
-type SessionOutcome = (
-    String,
-    ControlStats,
-    Option<tokio::task::JoinHandle<crate::stats::SendStats>>,
-);
+type SendTask = tokio::task::JoinHandle<(crate::stats::SendStats, tokio_mpsc::Receiver<LinuxUnit>)>;
+type SessionOutcome = (String, ControlStats, Option<SendTask>, Connection);
 
 async fn session(
-    conn: &Connection,
+    mut conn: Connection,
     cfg: &SenderConfig,
     prepared: &mut Prepared,
     mut shutdown: watch::Receiver<bool>,
@@ -692,11 +683,14 @@ async fn session(
     .await?;
     expect_started(&mut ctl).await?;
     let video_rx = capture.video_rx.take().context("fuente Linux ya usada")?;
-    let send_task = tokio::spawn(send_video(
+    let (mut stop_video, stop_rx) = watch::channel(false);
+    let mut send_task = tokio::spawn(send_video(
         conn.clone(),
         video_rx,
         cfg.clone(),
         Duration::from_micros(16_667),
+        Default::default(),
+        stop_rx,
     ));
     let worker = &capture.worker;
     worker.shared.force_idr.store(true, Ordering::Relaxed);
@@ -735,104 +729,190 @@ async fn session(
         }
     };
     tokio::pin!(system_closed);
-    let end_reason = loop {
-        tokio::select! {
-            _ = health.tick() => {}
-            Some(msg) = cs_clipboard::bridge::next_outgoing(&mut clipboard) => {
-                if let Err(e) = ctl.send(&ControlMessage::ClipboardText(msg)).await {
-                    break format!("conexión de control perdida: {e}");
-                }
-                cs.clipboard_sent += 1;
-            }
-            _ = &mut system_closed => {
-                break "se dejó de compartir la pantalla desde el sistema".to_owned();
-            }
-            result = shutdown.changed() => {
-                break if result.is_err() || *shutdown.borrow() {
-                    "parada pedida".to_owned()
-                } else {
-                    "canal de parada cerrado".to_owned()
-                };
-            }
-            _ = async {
-                match deadline {
-                    Some(d) => tokio::time::sleep_until(d).await,
-                    None => std::future::pending::<()>().await,
-                }
-            } => break "duración cumplida (--seconds)".to_owned(),
-            m = ctl.recv::<ControlMessage>() => match m {
-                Ok(Some(ControlMessage::RequestKeyframe { .. })) => {
-                    cs.keyframe_requests += 1;
-                    let now = Instant::now();
-                    if last_forced.is_none_or(|t| now.duration_since(t) >= MIN_IDR_INTERVAL) {
-                        last_forced = Some(now);
-                        worker.shared.force_idr.store(true, Ordering::Relaxed);
-                        cs.keyframes_forced += 1;
-                    } else {
-                        cs.keyframe_requests_ignored += 1;
+    let mut peer_gone = false;
+    let end_reason: String = 'session: loop {
+        let (drop_reason, connection_lost) = loop {
+            tokio::select! {
+                _ = health.tick() => {}
+                Some(msg) = cs_clipboard::bridge::next_outgoing(&mut clipboard) => {
+                    if let Err(e) = ctl.send(&ControlMessage::ClipboardText(msg)).await {
+                        break (format!("conexión de control perdida: {e}"), true);
                     }
+                    cs.clipboard_sent += 1;
                 }
-                Ok(Some(ControlMessage::ReceiverStats(s))) => {
-                    cs.receiver_stats += 1;
-                    tracing::debug!(?s, "ReceiverStats");
-                    cs.last_receiver_stats = Some(s);
+                _ = &mut system_closed => {
+                    break ("se dejó de compartir la pantalla desde el sistema".to_owned(), false);
                 }
-                Ok(Some(ControlMessage::Bye { reason })) => {
-                    break format!("el receptor se despidió ({reason:?})");
+                result = shutdown.changed() => {
+                    break if result.is_err() || *shutdown.borrow() {
+                        ("parada pedida".to_owned(), false)
+                    } else {
+                        ("canal de parada cerrado".to_owned(), false)
+                    };
                 }
-                Ok(Some(ControlMessage::StopStream { .. })) => {
-                    break "el receptor pidió StopStream".to_owned();
-                }
-                Ok(Some(ControlMessage::Input(ev))) => {
-                    if can_inject && ev.stream_id() == STREAM_ID {
-                        let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
-                        pressed.record(&ev);
-                        for action in to_actions(&ev, size, &mut wheel) {
-                            match system.map(|s| s.inject(&action)) {
-                                Some(f) => match f.await {
-                                    Ok(()) => cs.input_events_injected += 1,
-                                    Err(e) => {
-                                        cs.input_events_blocked += 1;
-                                        tracing::debug!("entrada remota no inyectada: {e}");
-                                    }
-                                },
-                                None => cs.input_events_blocked += 1,
+                _ = async {
+                    match deadline {
+                        Some(d) => tokio::time::sleep_until(d).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => break ("duración cumplida (--seconds)".to_owned(), false),
+                m = ctl.recv::<ControlMessage>() => match m {
+                    Ok(Some(ControlMessage::RequestKeyframe { .. })) => {
+                        cs.keyframe_requests += 1;
+                        let now = Instant::now();
+                        if last_forced.is_none_or(|t| now.duration_since(t) >= MIN_IDR_INTERVAL) {
+                            last_forced = Some(now);
+                            worker.shared.force_idr.store(true, Ordering::Relaxed);
+                            cs.keyframes_forced += 1;
+                        } else {
+                            cs.keyframe_requests_ignored += 1;
+                        }
+                    }
+                    Ok(Some(ControlMessage::ReceiverStats(s))) => {
+                        cs.receiver_stats += 1;
+                        tracing::debug!(?s, "ReceiverStats");
+                        cs.last_receiver_stats = Some(s);
+                    }
+                    Ok(Some(ControlMessage::Bye { reason })) => {
+                        peer_gone = true;
+                        break (format!("el receptor se despidió ({reason:?})"), false);
+                    }
+                    Ok(Some(ControlMessage::StopStream { .. })) => {
+                        break ("el receptor pidió StopStream".to_owned(), false);
+                    }
+                    Ok(Some(ControlMessage::Input(ev))) => {
+                        if can_inject && ev.stream_id() == STREAM_ID {
+                            let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
+                            pressed.record(&ev);
+                            for action in to_actions(&ev, size, &mut wheel) {
+                                match system.map(|s| s.inject(&action)) {
+                                    Some(f) => match f.await {
+                                        Ok(()) => cs.input_events_injected += 1,
+                                        Err(e) => {
+                                            cs.input_events_blocked += 1;
+                                            tracing::debug!("entrada remota no inyectada: {e}");
+                                        }
+                                    },
+                                    None => cs.input_events_blocked += 1,
+                                }
                             }
                         }
                     }
-                }
-                Ok(Some(ControlMessage::ClipboardText(t))) => {
-                    if let Some(b) = clipboard.as_ref() {
-                        cs.clipboard_received += 1;
-                        b.deliver(t);
+                    Ok(Some(ControlMessage::ClipboardText(t))) => {
+                        if let Some(b) = clipboard.as_ref() {
+                            cs.clipboard_received += 1;
+                            b.deliver(t);
+                        }
                     }
+                    // Ping y demás: no se usan en Linux.
+                    Ok(Some(_)) => {}
+                    Ok(None) => break ("el receptor cerró el canal de control".to_owned(), true),
+                    Err(error) => break (format!("conexión de control perdida: {error}"), true),
+                },
+            }
+            if worker.finished() {
+                break ("fallo en captura/codificación".to_owned(), false);
+            }
+        };
+        // Nada debe quedar pulsado en GNOME (teclas, botones) tras un corte o al
+        // terminar.
+        if let Some(sys) = system.filter(|_| can_inject) {
+            let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
+            for ev in pressed.release_all() {
+                for action in to_actions(&ev, size, &mut wheel) {
+                    let _ = sys.inject(&action).await;
                 }
-                // Ping y demás: no se usan en Linux.
-                Ok(Some(_)) => {}
-                Ok(None) => break "el receptor cerró el canal de control".to_owned(),
-                Err(error) => break format!("conexión de control perdida: {error}"),
-            },
-        }
-        if worker.finished() {
-            break "fallo en captura/codificación".to_owned();
-        }
-    };
-    // Nada debe quedar pulsado en GNOME (teclas, botones).
-    if let Some(sys) = system.filter(|_| can_inject) {
-        let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
-        for ev in pressed.release_all() {
-            for action in to_actions(&ev, size, &mut wheel) {
-                let _ = sys.inject(&action).await;
             }
         }
-    }
-    let _ = ctl
-        .send(&ControlMessage::Bye {
-            reason: ByeReason::UserRequested,
-        })
+        // Corte de red: reconectar sin soltar la captura ni el monitor virtual.
+        let Some(reconn) = cfg
+            .reconnect
+            .as_ref()
+            .filter(|r| connection_lost && !r.grace.is_zero())
+        else {
+            break 'session drop_reason;
+        };
+        peer_gone = true;
+        tracing::warn!(
+            reason = %drop_reason,
+            grace_s = reconn.grace.as_secs_f64(),
+            "conexión interrumpida; intentando reconectar sin soltar la captura"
+        );
+        tracing::info!(
+            "Conexión interrumpida ({drop_reason}); intentando reconectar durante {:.0} s…",
+            reconn.grace.as_secs_f64()
+        );
+        worker.shared.streaming.store(false, Ordering::Relaxed);
+        let _ = stop_video.send(true);
+        let (sstats, mut recovered_rx) =
+            match tokio::time::timeout(Duration::from_secs(2), &mut send_task).await {
+                Ok(Ok(pair)) => pair,
+                _ => break 'session drop_reason,
+            };
+        conn.close(b"reconnecting");
+        let size = (*capture.size_rx.borrow()).unwrap_or((width, height));
+        let display_mode = Mode::new(size.0, size.1, 60);
+        match crate::reconnect::try_reconnect(
+            reconn,
+            cfg,
+            display_mode,
+            stream_mode,
+            &mut shutdown,
+            deadline,
+        )
+        .await
+        {
+            Ok(Some((new_conn, new_ctl))) => {
+                conn = new_conn;
+                ctl = new_ctl;
+                peer_gone = false;
+                while recovered_rx.try_recv().is_ok() {}
+                worker.shared.force_idr.store(true, Ordering::Relaxed);
+                worker.shared.streaming.store(true, Ordering::Relaxed);
+                let (tx, rx) = watch::channel(false);
+                stop_video = tx;
+                send_task = tokio::spawn(send_video(
+                    conn.clone(),
+                    recovered_rx,
+                    cfg.clone(),
+                    Duration::from_micros(16_667),
+                    sstats,
+                    rx,
+                ));
+                cs.reconnections += 1;
+                tracing::info!(
+                    "Reconectado con {} (reconexión #{})",
+                    conn.remote_addr(),
+                    cs.reconnections
+                );
+            }
+            Ok(None) => {
+                send_task = tokio::spawn(async move { (sstats, recovered_rx) });
+                break 'session if *shutdown.borrow() {
+                    "parada pedida".to_owned()
+                } else {
+                    "duración cumplida (--seconds)".to_owned()
+                };
+            }
+            Err(e) => {
+                tracing::warn!("no se pudo reconectar en la ventana de gracia: {e:#}");
+                send_task = tokio::spawn(async move { (sstats, recovered_rx) });
+                break 'session format!("{drop_reason} (reconexión agotada: {e})");
+            }
+        }
+    };
+    if !peer_gone {
+        let _ = tokio::time::timeout(
+            Duration::from_millis(500),
+            ctl.send(&ControlMessage::Bye {
+                reason: ByeReason::UserRequested,
+            }),
+        )
         .await;
-    ctl.finish();
-    Ok((end_reason, cs, Some(send_task)))
+        ctl.finish();
+    }
+    let _ = stop_video.send(true);
+    Ok((end_reason, cs, Some(send_task), conn))
 }
 
 async fn expect_hello(ctl: &mut FramedStream) -> Result<cs_protocol::control::Hello> {
@@ -866,17 +946,21 @@ async fn expect_started(ctl: &mut FramedStream) -> Result<()> {
     }
 }
 
+/// Envía las unidades codificadas por datagramas hasta que se pida parar o
+/// se cierre la conexión. Devuelve la cola de vídeo para reutilizarla tras
+/// una reconexión.
 async fn send_video(
     conn: Connection,
     mut rx: tokio_mpsc::Receiver<LinuxUnit>,
     cfg: SenderConfig,
     interval: Duration,
-) -> crate::stats::SendStats {
+    mut stats: crate::stats::SendStats,
+    mut stop: watch::Receiver<bool>,
+) -> (crate::stats::SendStats, tokio_mpsc::Receiver<LinuxUnit>) {
     let Some(max_datagram) = conn.max_datagram_size() else {
         tracing::error!("la conexión no admite datagramas: no se puede enviar vídeo");
-        return Default::default();
+        return (stats, rx);
     };
-    let mut stats = crate::stats::SendStats::default();
     let packetizer = Packetizer::new(
         STREAM_ID,
         PacketizerConfig {
@@ -895,7 +979,15 @@ async fn send_video(
         ..PacedSendOptions::default()
     };
     let mut sequence = 0u32;
-    while let Some(unit) = rx.recv().await {
+    loop {
+        let unit = tokio::select! {
+            _ = stop.changed() => break,
+            _ = conn.closed() => break,
+            unit = rx.recv() => match unit {
+                Some(u) => u,
+                None => break,
+            },
+        };
         let meta = FrameMeta {
             frame_seq: sequence,
             pts_us: wire_pts(unit.pts_us),
@@ -927,7 +1019,7 @@ async fn send_video(
         stats.datagrams_failed += result.failed as u64;
         stats.max_pacing_late = stats.max_pacing_late.max(result.max_late);
     }
-    stats
+    (stats, rx)
 }
 
 #[cfg(test)]
