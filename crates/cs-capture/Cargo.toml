@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "cs-capture"
 description = "Captura de monitores en GPU de CrossScreen (DXGI Desktop Duplication en Windows)"
 version.workspace = true

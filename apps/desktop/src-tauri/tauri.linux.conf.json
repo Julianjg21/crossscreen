@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": {
+      "../../../target/release/crossscreen-agent": "crossscreen-agent",
+      "../../../target/release/crossscreen-viewer": "crossscreen-viewer",
+      "../../../scripts/fetch-openh264.sh": "fetch-openh264.sh",
+      "../../../docs/11-receptor-linux.md": "RECEPTOR-LINUX.md"
+    }
+  }
+}

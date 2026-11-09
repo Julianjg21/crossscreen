@@ -163,6 +163,9 @@ impl Renderer {
             ..Default::default()
         }))
         .map_err(|e| other(format!("creando el dispositivo: {e}")))?;
+        // Por defecto wgpu hace `panic!` ante un error de validación; el visor
+        // procesa datos de la red, así que se registra y se sigue.
+        device.on_uncaptured_error(Box::new(|e| tracing::error!("wgpu: {e}")));
 
         let caps = surface.get_capabilities(&adapter);
         // Formato sin conversión sRGB: el vídeo ya viene codificado en gamma.
@@ -326,7 +329,8 @@ impl Renderer {
         hotspot: (u32, u32),
         rgba: &[u8],
     ) -> Result<()> {
-        if width == 0 || height == 0 || rgba.len() != (width * height * 4) as usize {
+        self.check_dims(width, height)?;
+        if rgba.len() as u64 != u64::from(width) * u64::from(height) * 4 {
             return Err(other("forma de cursor con tamaño inconsistente"));
         }
         let tex = self.texture("cursor", width, height, wgpu::TextureFormat::Rgba8Unorm);
@@ -362,6 +366,16 @@ impl Renderer {
     /// Sin objeto *waitable*: el ritmo lo marca `get_current_texture` (Fifo).
     pub fn wait_for_frame(&self, _timeout: Duration) -> bool {
         true
+    }
+
+    /// Rechaza dimensiones nulas o mayores que el límite de textura del
+    /// dispositivo (wgpu fallaría la validación).
+    fn check_dims(&self, w: u32, h: u32) -> Result<()> {
+        let max = self.device.limits().max_texture_dimension_2d;
+        if w == 0 || h == 0 || w > max || h > max {
+            return Err(other(format!("tamaño {w}x{h} fuera de rango (máx. {max})")));
+        }
+        Ok(())
     }
 
     fn texture(&self, label: &str, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::Texture {
@@ -457,11 +471,20 @@ impl Renderer {
     pub fn render(&mut self, frame: Option<FrameRef<'_>>) -> Result<()> {
         if let Some(f) = frame {
             let (w, h) = (f.width, f.height);
-            if w == 0 || h == 0 {
-                return Err(other("frame de tamaño 0"));
+            self.check_dims(w, h)?;
+            let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+            let planes = [
+                (f.y.len(), f.strides.0, w),
+                (f.u.len(), f.strides.1, cw),
+                (f.v.len(), f.strides.2, cw),
+            ];
+            for (i, (len, stride, pw)) in planes.into_iter().enumerate() {
+                let rows = if i == 0 { h } else { ch };
+                if !plane_fits(len, stride, pw, rows) {
+                    return Err(other("plano de vídeo con tamaño o stride inconsistente"));
+                }
             }
             self.ensure_video_textures(w, h);
-            let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
             if let Some(v) = self.video.as_ref() {
                 self.upload(&v.y, f.y, f.strides.0, w, h);
                 self.upload(&v.u, f.u, f.strides.1, cw, ch);
@@ -558,5 +581,30 @@ impl Renderer {
         Err(other(
             "la captura de pantalla del visor aún no está implementada en Linux",
         ))
+    }
+}
+
+/// ¿Cabe un plano de `rows` filas de `width` bytes con este `stride` en un
+/// búfer de `len` bytes? (la última fila no necesita el relleno del stride).
+fn plane_fits(len: usize, stride: usize, width: u32, rows: u32) -> bool {
+    let (width, rows) = (width as u64, rows as u64);
+    let (len, stride) = (len as u64, stride as u64);
+    stride >= width && stride <= u64::from(u32::MAX) && stride * (rows - 1) + width <= len
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plane_fits;
+
+    #[test]
+    fn plane_bounds() {
+        assert!(plane_fits(1920 * 1080, 1920, 1920, 1080));
+        // Stride con relleno: la última fila puede ir sin él.
+        assert!(plane_fits(2048 * 1079 + 1920, 2048, 1920, 1080));
+        assert!(!plane_fits(2048 * 1079 + 1919, 2048, 1920, 1080));
+        // Stride menor que el ancho.
+        assert!(!plane_fits(1 << 30, 1000, 1920, 1080));
+        // Búfer corto.
+        assert!(!plane_fits(100, 1920, 1920, 1080));
     }
 }

@@ -74,7 +74,7 @@ impl LinuxWorker {
                 })
             })
         });
-        let stats = worker.map(|task| task).map(|task| async move {
+        let stats = worker.map(|task| async move {
             task.await.unwrap_or_else(|_| WorkerStats {
                 fatal: Some("no se pudo esperar al hilo Linux de captura".into()),
                 ..WorkerStats::default()
@@ -111,12 +111,7 @@ fn encode_loop(
             .as_ref()
             .is_none_or(|(_, size)| *size != (buffer.width, buffer.height))
         {
-            let config = EncoderConfig {
-                bitrate_kbps,
-                fps_num: 60,
-                fps_den: 1,
-                ..EncoderConfig::default()
-            };
+            let config = EncoderConfig::desktop(buffer.width, buffer.height, 60, bitrate_kbps);
             match OpenH264Encoder::from_default_path(&config) {
                 Ok(enc) => {
                     encoder = Some((enc, (buffer.width, buffer.height)));
@@ -147,7 +142,13 @@ fn encode_loop(
         let Some((encoder, _)) = encoder.as_mut() else {
             continue;
         };
-        let units = match encoder.encode(&frame, EncodeControl { force_idr }) {
+        let units = match encoder.encode(
+            &frame,
+            EncodeControl {
+                force_idr,
+                ..Default::default()
+            },
+        ) {
             Ok(units) => units,
             Err(error) => {
                 stats.encoder_errors += 1;
@@ -321,7 +322,7 @@ async fn send_video(
         return Default::default();
     };
     let mut stats = crate::stats::SendStats::default();
-    let mut packetizer = Packetizer::new(
+    let packetizer = Packetizer::new(
         STREAM_ID,
         PacketizerConfig {
             max_datagram,

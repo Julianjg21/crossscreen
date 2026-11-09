@@ -26,13 +26,7 @@
   "bundle": {
     "active": true,
     "targets": ["appimage", "deb"],
-    "resources": [
-      "../../../target/release/crossscreen-agent*",
-      "../../../target/release/crossscreen-viewer*",
-      "../../../scripts/fetch-openh264.sh",
-      "../../../docs/11-receptor-linux.md"
-    ],
-    "category": "Network",
+    "category": "Utility",
     "shortDescription": "Panel visual para CrossScreen",
     "longDescription": "Controla el emparejamiento y la transmisión de pantalla de CrossScreen.",
     "linux": {

@@ -20,6 +20,9 @@ ignore = [
     # ashpd 0.12 (Portal oficial para GNOME) depende de estos crates D-Bus.
     # RustSec indica que no existe actualización segura dentro de la rama
     # compatible; retirar la excepción cuando ashpd migre a zbus 6.
+    # pin-utils (repositorio archivado; sin vulnerabilidad conocida) llega vía
+    # nix 0.26 → pipewire/libspa 0.7.2, solo en Linux. Retirar al subir pipewire.
+    { id = "RUSTSEC-2026-0441", reason = "macros de pin sin mantenimiento vía pipewire 0.7 (solo Linux); sin vulnerabilidad" },
     { id = "RUSTSEC-2026-0370", reason = "dependencia transitiva de ashpd para XDG Desktop Portal; sin actualización segura disponible" },
     { id = "RUSTSEC-2026-0371", reason = "dependencia transitiva de ashpd para XDG Desktop Portal; sin actualización segura disponible" },
     { id = "RUSTSEC-2026-0372", reason = "dependencia transitiva de ashpd para XDG Desktop Portal; sin actualización segura disponible" },

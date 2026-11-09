@@ -15,6 +15,7 @@
 pub mod bmp;
 pub mod cursor;
 pub mod stats;
+pub mod yuv;
 
 #[cfg(all(not(windows), feature = "linux-pipewire"))]
 pub mod linux_pipewire;

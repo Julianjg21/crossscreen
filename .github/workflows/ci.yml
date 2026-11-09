@@ -40,9 +40,6 @@ jobs:
   linux:
     name: Linux (crates portables)
     runs-on: ubuntu-24.04
-    env:
-      LIBCLANG_PATH: /usr/lib/llvm-18/lib
-      LD_LIBRARY_PATH: /usr/lib/llvm-18/lib:/usr/lib/x86_64-linux-gnu
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
