@@ -172,6 +172,8 @@ pub struct SessionStats {
     pub input_events_sent: u64,
     pub clipboard_sent: u64,
     pub clipboard_received: u64,
+    /// Búfer de audio al terminar (si hubo audio).
+    pub audio: Option<crate::net::AudioRxStats>,
     // Decodificación.
     pub frames_decoded: u64,
     pub decode_errors: u64,
@@ -321,6 +323,19 @@ impl SessionStats {
             );
         } else if self.episode_open_at_end {
             cs_log::out!("episodios de pérdida: 1 abierto al terminar, ninguno cerrado");
+        }
+        if let Some(a) = self.audio {
+            let b = a.buffer;
+            cs_log::out!(
+                "audio: {} tramas de 10 ms reproducidas · {} ocultadas (pérdidas) · {} tardías · {} vacíos del búfer · {} correcciones de deriva · objetivo final {} ms · mayor hueco entre paquetes {:.0} ms",
+                b.packets,
+                b.concealed,
+                b.late_or_duplicate,
+                b.underruns,
+                b.drift_adjusted,
+                a.target_ms,
+                a.max_gap.as_secs_f64() * 1e3
+            );
         }
         if let Some(t) = self.first_frame {
             cs_log::out!(

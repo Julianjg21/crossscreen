@@ -264,6 +264,7 @@ impl Agent {
                 profile,
                 clipboard,
                 accept_input,
+                audio,
             } => {
                 self.start_stream(
                     &addr,
@@ -274,6 +275,7 @@ impl Agent {
                     profile,
                     clipboard,
                     accept_input,
+                    audio,
                 )
                 .await
             }
@@ -282,7 +284,11 @@ impl Agent {
                 port,
                 fullscreen,
                 clipboard,
-            } => self.start_receiver(port, fullscreen, clipboard).await,
+                audio,
+            } => {
+                self.start_receiver(port, fullscreen, clipboard, audio)
+                    .await
+            }
             Request::StopReceiver => self.stop_receiver().await,
             Request::InstallOpenH264 => self.install_openh264().await,
             Request::GetSettings => Ok(Response::Settings(self.settings_info())),
@@ -375,7 +381,10 @@ impl Agent {
         let Some(r) = self.load_settings().receiver_on_start else {
             return;
         };
-        match self.start_receiver(r.port, r.fullscreen, r.clipboard).await {
+        match self
+            .start_receiver(r.port, r.fullscreen, r.clipboard, r.audio)
+            .await
+        {
             Ok(_) => tracing::info!(port = r.port, "recepción automática al arrancar"),
             Err(e) => tracing::warn!("no se pudo iniciar la recepción automática: {}", e.message),
         }
@@ -637,6 +646,7 @@ impl Agent {
         profile: StreamProfileInfo,
         clipboard: bool,
         accept_input: Option<bool>,
+        audio: bool,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -717,6 +727,7 @@ impl Agent {
         cfg.requested_mode = requested_mode;
         cfg.bitrate_kbps = bitrate_kbps;
         cfg.clipboard = clipboard;
+        cfg.audio = audio;
         // Control remoto de este equipo: siempre explícito (por defecto solo
         // se transmite la imagen).
         cfg.accept_input = accept_input.unwrap_or(false);
@@ -892,6 +903,7 @@ impl Agent {
         port: u16,
         fullscreen: bool,
         clipboard: bool,
+        audio: bool,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -938,6 +950,9 @@ impl Agent {
             .kill_on_drop(true);
         if fullscreen {
             cmd.arg("--fullscreen");
+        }
+        if audio {
+            cmd.arg("--audio");
         }
         if clipboard {
             cmd.arg("--clipboard");

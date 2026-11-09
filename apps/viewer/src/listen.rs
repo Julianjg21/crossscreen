@@ -197,6 +197,7 @@ impl ListenApp {
             dpi,
             keyframe_policy: self.args.keyframe_policy,
             clipboard: self.args.clipboard,
+            audio: self.args.audio,
         };
         self.net = Some(net::spawn(cfg, self.proxy.clone(), cmd_rx)?);
         self.net_cmd = Some(cmd_tx);

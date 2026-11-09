@@ -28,6 +28,7 @@ Plataforma open source para usar un segundo computador como **monitor adicional 
 | Linux como receptor: `crossscreen-viewer --listen` con OpenH264 (binario de Cisco, por CPU) y wgpu (Vulkan/GL), X11 y Wayland | ✅ validado en Ubuntu real | Prueba Windows → Ubuntu completada; VAAPI (GPU) pendiente |
 | Linux como fuente: **extender** (monitor virtual de GNOME, API de Mutter) y **duplicar** (XDG Desktop Portal + PipeWire), OpenH264 | ✅ validado en Ubuntu real | Duplicar y extender probados por el dueño; extender también contra Mutter 46.2 *headless* |
 | Entrada remota hacia Linux (Mutter `RemoteDesktop` / portal) y portapapeles en Linux (X11/XWayland) | ✅ implementado; ⚠️ pendiente de probar en Ubuntu real | Inyección real contra Mutter 46.2; portapapeles entre procesos con Xvfb |
+| **Audio del sistema** (opcional en emisor y receptor): WASAPI *loopback* / PipeWire, Opus en Rust puro, búfer adaptativo con compensación de deriva | ✅ | Linux → Windows de punta a punta: 795 tramas enviadas y reproducidas, 0 pérdidas; WASAPI real ida y vuelta; ADR-0008 |
 | Reconexión automática del emisor (Windows y Linux) | ✅ | Corte de red de 12 s a mitad de transmisión: reconexión 1,9 s después de volver la red, sin pérdidas |
 | Instalación en Linux: `.deb`, AppImage y `.tar.gz`; OpenH264 se instala desde el panel | ✅ | Descarga oficial de Cisco con SHA-256 verificado |
 | Registros por ejecución (panel, agente, visor, CLI) con botón «Abrir carpeta de registros» | ✅ | `%LOCALAPPDATA%\CrossScreen\logs` · `~/.local/state/crossscreen/logs` |

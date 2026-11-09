@@ -22,6 +22,7 @@ members = [
     "crates/cs-input",
     "crates/cs-clipboard",
     "crates/cs-log",
+    "crates/cs-audio",
 ]
 
 [workspace.package]

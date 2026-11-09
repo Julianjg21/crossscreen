@@ -15,6 +15,7 @@ path = "src/main.rs"
 cs-core.workspace = true
 cs-protocol.workspace = true
 cs-clipboard = { path = "../../crates/cs-clipboard" }
+cs-audio = { path = "../../crates/cs-audio" }
 cs-security.workspace = true
 cs-transport.workspace = true
 cs-discovery.workspace = true
@@ -43,6 +44,7 @@ windows = { version = "0.58", features = [
 # Linux: backends de ventanas de winit (Wayland con decoraciones propias sin
 # título, que no incrusta fuentes, y X11).
 [target.'cfg(not(windows))'.dependencies]
+cs-audio = { path = "../../crates/cs-audio", features = ["linux-pipewire"] }
 winit = { version = "0.30", default-features = false, features = [
     "rwh_06",
     "x11",

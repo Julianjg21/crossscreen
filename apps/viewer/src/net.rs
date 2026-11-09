@@ -57,6 +57,8 @@ pub struct NetConfig {
     pub keyframe_policy: KeyframePolicy,
     /// Sincronizar el portapapeles de texto con la fuente (F7).
     pub clipboard: bool,
+    /// Pedir y reproducir el audio de la fuente (ADR-0008).
+    pub audio: bool,
 }
 
 /// Arranca el hilo de red. Al terminar envía `UserEvent::NetDone`.
@@ -602,6 +604,7 @@ async fn session(
         early_pos,
         cfg.keyframe_policy,
         cfg.clipboard,
+        cfg.audio,
     )
     .await;
     ctl.finish();
@@ -628,6 +631,7 @@ async fn streaming(
     early_pos: Option<(i32, i32, bool)>,
     keyframe_policy: KeyframePolicy,
     clipboard_enabled: bool,
+    audio_enabled: bool,
 ) -> Result<Exit> {
     match timed("la ventana y el decodificador", async {
         ready_rx
@@ -692,6 +696,13 @@ async fn streaming(
         None
     };
 
+    // Audio (ADR-0008): pedirlo si está activado; suena cuando llega AudioStart.
+    let mut audio: Option<AudioRx> = None;
+    if audio_enabled {
+        ctl.send(&ControlMessage::AudioRequest { enabled: true })
+            .await?;
+    }
+
     let exit = 'main: loop {
         tokio::select! {
             d = conn.read_datagram() => {
@@ -699,6 +710,12 @@ async fn streaming(
                     Ok(d) => d,
                     Err(e) => break Exit::Ended(format!("conexión cerrada: {e}")),
                 };
+                if cs_protocol::audio::is_audio(&d) {
+                    if let Some(a) = audio.as_ref() {
+                        a.push(&d);
+                    }
+                    continue;
+                }
                 if let Ok((h, _)) = FragmentHeader::decode(&d) {
                     seen_seqs.insert(h.frame_seq);
                     if seen_seqs.len() > 1024 {
@@ -801,6 +818,22 @@ async fn streaming(
                         b.deliver(t);
                     }
                 }
+                Ok(Some(ControlMessage::AudioStart(s))) => {
+                    if audio_enabled && audio.is_none() {
+                        match AudioRx::start(&s) {
+                            Ok(a) => {
+                                cs_log::out!("audio de la fuente: Opus {} Hz, {} canales", s.sample_rate, s.channels);
+                                audio = Some(a);
+                            }
+                            Err(e) => tracing::warn!("no se puede reproducir el audio: {e:#}"),
+                        }
+                    }
+                }
+                Ok(Some(ControlMessage::AudioStop { .. })) => {
+                    if let Some(a) = audio.take() {
+                        lock().audio = Some(a.stats());
+                    }
+                }
                 Ok(Some(other)) => tracing::debug!("control: {other:?}"),
                 Ok(None) => break Exit::Ended("la fuente cerró el canal de control".into()),
                 Err(e) => break Exit::Ended(format!("canal de control: {e}")),
@@ -859,6 +892,9 @@ async fn streaming(
             }
         }
     };
+    if let Some(a) = audio.take() {
+        lock().audio = Some(a.stats());
+    }
     let r = reasm.stats();
     let mut s = lock();
     s.datagrams = r.datagrams;
@@ -889,6 +925,77 @@ async fn send_keyframe_request(
     }
     tracing::debug!("RequestKeyframe enviado ({action:?})");
     Ok(())
+}
+
+/// Reproducción del audio de la fuente: búfer de jitter + dispositivo.
+struct AudioRx {
+    jitter: Arc<Mutex<cs_audio::jitter::JitterBuffer>>,
+    _playback: cs_audio::AudioPlayback,
+    /// Llegada del último paquete y mayor hueco entre paquetes (diagnóstico).
+    arrivals: Mutex<(Option<Instant>, Duration)>,
+}
+
+impl AudioRx {
+    fn start(s: &cs_protocol::control::AudioStart) -> Result<Self> {
+        use cs_protocol::control::AudioCodec;
+        if s.codec != AudioCodec::Opus
+            || s.sample_rate != cs_audio::SAMPLE_RATE
+            || usize::from(s.channels) != cs_audio::CHANNELS
+        {
+            bail!(
+                "formato de audio no soportado: {:?} {} Hz {} canales",
+                s.codec,
+                s.sample_rate,
+                s.channels
+            );
+        }
+        let jitter = Arc::new(Mutex::new(cs_audio::jitter::JitterBuffer::new()?));
+        let playback = cs_audio::start_playback(jitter.clone())?;
+        Ok(Self {
+            jitter,
+            _playback: playback,
+            arrivals: Mutex::new((None, Duration::ZERO)),
+        })
+    }
+
+    fn push(&self, datagram: &[u8]) {
+        if let Ok(mut a) = self.arrivals.lock() {
+            let now = Instant::now();
+            if let Some(prev) = a.0 {
+                a.1 = a.1.max(now - prev);
+            }
+            a.0 = Some(now);
+        }
+        if let Ok((h, payload)) = cs_protocol::audio::AudioHeader::decode(datagram) {
+            if let Ok(mut j) = self.jitter.lock() {
+                j.push(h.seq, payload);
+            }
+        }
+    }
+
+    fn stats(&self) -> AudioRxStats {
+        let (buffer, target_ms) = self
+            .jitter
+            .lock()
+            .map(|j| (j.stats(), j.target_ms()))
+            .unwrap_or_default();
+        let max_gap = self.arrivals.lock().map(|a| a.1).unwrap_or_default();
+        AudioRxStats {
+            buffer,
+            target_ms,
+            max_gap,
+        }
+    }
+}
+
+/// Resumen del audio recibido.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AudioRxStats {
+    pub buffer: cs_audio::jitter::JitterStats,
+    /// Objetivo final del búfer adaptativo.
+    pub target_ms: u32,
+    /// Mayor hueco entre dos paquetes de audio consecutivos.
+    pub max_gap: Duration,
 }
 
 #[cfg(test)]

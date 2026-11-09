@@ -93,6 +93,8 @@ pub struct ControlStats {
     /// Portapapeles (F7): textos enviados al receptor y recibidos de él.
     pub clipboard_sent: u64,
     pub clipboard_received: u64,
+    /// Tramas de audio (10 ms) enviadas.
+    pub audio_frames_sent: u64,
     /// Cambios de paridad del FEC adaptativo y rango alcanzado.
     pub fec_changes: u64,
     pub fec_initial: f32,
@@ -247,6 +249,14 @@ impl fmt::Display for SenderReport {
                 f,
                 "Portapapeles: {} textos enviados · {} recibidos",
                 c.clipboard_sent, c.clipboard_received
+            )?;
+        }
+        if c.audio_frames_sent > 0 {
+            writeln!(
+                f,
+                "Audio: {} tramas de 10 ms enviadas ({:.1} s)",
+                c.audio_frames_sent,
+                c.audio_frames_sent as f64 / 100.0
             )?;
         }
         if let Some(rs) = c.last_receiver_stats {

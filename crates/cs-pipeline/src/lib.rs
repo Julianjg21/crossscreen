@@ -11,6 +11,7 @@
 //!
 //! Diseño y medidas: `docs/poc-results/mvp-f2-emisor.md`.
 
+pub mod audio;
 pub mod cursor;
 pub mod display_guard;
 mod reconnect;
@@ -90,6 +91,9 @@ pub struct SenderConfig {
     /// sensibles (p. ej. contraseñas copiadas por un gestor); el usuario debe
     /// activarlo de forma explícita.
     pub clipboard: bool,
+    /// Enviar el audio del sistema si el receptor lo pide (ADR-0008).
+    /// Desactivado por defecto: por defecto solo se transmite la imagen.
+    pub audio: bool,
     /// **Solo pruebas**: inyectar pérdidas en los datagramas salientes
     /// `(modelo, semilla)`.
     pub sim_loss: Option<(LossModel, u64)>,
@@ -119,6 +123,7 @@ impl SenderConfig {
             // Por defecto solo imagen: el control remoto se activa a propósito.
             accept_input: false,
             clipboard: false,
+            audio: false,
             sim_loss: None,
         }
     }

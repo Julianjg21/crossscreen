@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 4 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 5 };
 
 /// Identificador de la compilación (`git describe`), inyectado con la variable
 /// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
@@ -128,6 +128,9 @@ pub enum Request {
         /// monitor virtual de GNOME no pide confirmación al sistema).
         #[serde(default)]
         accept_input: Option<bool>,
+        /// Enviar el audio del sistema si el receptor lo pide (IPC 1.5).
+        #[serde(default)]
+        audio: bool,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -138,6 +141,9 @@ pub enum Request {
         /// Sincronizar el portapapeles de texto (F7). Desactivado por defecto.
         #[serde(default)]
         clipboard: bool,
+        /// Pedir y reproducir el audio de la fuente (IPC 1.5).
+        #[serde(default)]
+        audio: bool,
     },
     /// Detiene el visor receptor en curso (si lo hay).
     StopReceiver,
@@ -365,6 +371,8 @@ pub struct ReceiverAutoStartInfo {
     pub fullscreen: bool,
     #[serde(default)]
     pub clipboard: bool,
+    #[serde(default)]
+    pub audio: bool,
 }
 
 /// Ajustes de arranque (IPC 1.4).
@@ -432,7 +440,8 @@ mod tests {
                 receiver_on_start: Some(ReceiverAutoStartInfo {
                     port: 47810,
                     fullscreen: true,
-                    clipboard: false
+                    clipboard: false,
+                    audio: false
                 }),
             }
         );
@@ -510,12 +519,14 @@ mod tests {
                 profile: StreamProfileInfo::Wifi,
                 clipboard: true,
                 accept_input: Some(false),
+                audio: false,
             },
             Request::StopStream,
             Request::StartReceiver {
                 port: 47810,
                 fullscreen: true,
                 clipboard: false,
+                audio: true,
             },
             Request::StopReceiver,
             Request::Shutdown,

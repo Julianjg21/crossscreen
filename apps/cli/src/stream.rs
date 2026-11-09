@@ -85,6 +85,10 @@ pub struct StreamArgs {
     /// defecto: puede contener contraseñas u otros datos sensibles).
     #[arg(long)]
     pub clipboard: bool,
+    /// Enviar el audio del sistema si el receptor lo pide (desactivado por
+    /// defecto: por defecto solo se transmite la imagen).
+    #[arg(long)]
+    pub audio: bool,
     /// **Solo pruebas**: simular pérdidas en ráfaga al enviar datagramas,
     /// p. ej. `gilbert:p=0.015,r=0.25,h=0.8` o `bernoulli:p=0.01`.
     #[arg(long)]
@@ -133,6 +137,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     // Por defecto solo se transmite la imagen: el control remoto se pide.
     cfg.accept_input = a.allow_remote_input && !a.no_remote_input;
     cfg.clipboard = a.clipboard;
+    cfg.audio = a.audio;
     cfg.sim_loss = a.sim_loss.map(|m| (m, a.sim_loss_seed));
 
     // Señal de parada: Ctrl+C, Ctrl+Break y cierre de la consola.

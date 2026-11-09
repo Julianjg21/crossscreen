@@ -91,6 +91,9 @@ export default function Stream({
   const [rxPort, setRxPort] = useState(String(DEFAULT_PORT));
   const [rxFullscreen, setRxFullscreen] = useState(true);
   const [rxClipboard, setRxClipboard] = useState(false);
+  // Audio: desactivado por defecto en ambos lados.
+  const [audio, setAudio] = useState(false);
+  const [rxAudio, setRxAudio] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rxBusy, setRxBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -254,6 +257,7 @@ export default function Stream({
           profile,
           clipboard,
           accept_input: allowInput,
+          audio,
         },
         "stream_started",
       );
@@ -291,7 +295,13 @@ export default function Stream({
     setRxBusy(true);
     try {
       const r = await call(
-        { kind: "start_receiver", port: portNum, fullscreen: rxFullscreen, clipboard: rxClipboard },
+        {
+          kind: "start_receiver",
+          port: portNum,
+          fullscreen: rxFullscreen,
+          clipboard: rxClipboard,
+          audio: rxAudio,
+        },
         "receiver_started",
       );
       setReceiver(r.receiver);
@@ -532,6 +542,20 @@ export default function Stream({
                 {" "}Desactivado por defecto.
               </p>
 
+              <label style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <input
+                  type="checkbox"
+                  checked={audio}
+                  onChange={(e) => setAudio(e.target.checked)}
+                  aria-describedby="stream-audio-help"
+                />
+                <span>Enviar el audio de este equipo</span>
+              </label>
+              <p id="stream-audio-help" className="muted" style={{ marginTop: 4 }}>
+                Lo que suena en este equipo se oye en el receptor (Opus, ~130 kbps). Desactivado
+                por defecto; el receptor también debe activar «Reproducir el audio».
+              </p>
+
               <label htmlFor="stream-profile" style={{ marginTop: 12 }}>
                 Perfil de red
               </label>
@@ -652,6 +676,19 @@ export default function Stream({
                 <p id="rx-clipboard-help" className="muted" style={{ marginTop: 4 }}>
                   Desactivado por defecto: el portapapeles puede contener datos sensibles.
                   Para que funcione, el emisor también debe activarlo.
+                </p>
+                <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={rxAudio}
+                    onChange={(e) => setRxAudio(e.target.checked)}
+                    aria-describedby="rx-audio-help"
+                  />
+                  <span>Reproducir el audio que envíe el emisor</span>
+                </label>
+                <p id="rx-audio-help" className="muted" style={{ marginTop: 4 }}>
+                  Desactivado por defecto. Para que suene, el emisor también debe activar
+                  «Enviar el audio de este equipo».
                 </p>
               </div>
               <div className="actions">

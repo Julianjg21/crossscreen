@@ -113,6 +113,10 @@ pub struct Args {
     /// defecto: puede contener contraseñas u otros datos sensibles).
     #[arg(long)]
     pub clipboard: bool,
+    /// Reproducir el audio del sistema de la fuente si esta lo envía
+    /// (desactivado por defecto: por defecto solo se transmite la imagen).
+    #[arg(long)]
+    pub audio: bool,
 }
 
 fn main() -> anyhow::Result<()> {

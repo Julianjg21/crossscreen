@@ -70,6 +70,35 @@ pub enum ControlMessage {
     Input(InputEvent),
     /// Portapapeles de texto (F7), en ambos sentidos. Ver [`ClipboardText`].
     ClipboardText(ClipboardText),
+    /// Del receptor al emisor: quiere (o ya no quiere) recibir el audio del
+    /// emisor. El emisor solo lo envía si además lo tiene activado (ADR-0008).
+    AudioRequest {
+        enabled: bool,
+    },
+    /// Del emisor al receptor: empieza un flujo de audio con este formato;
+    /// los datagramas de audio llegan después.
+    AudioStart(AudioStart),
+    /// Del emisor al receptor: termina el flujo de audio.
+    AudioStop {
+        stream_id: u16,
+    },
+}
+
+/// Códec de audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioCodec {
+    Opus,
+}
+
+/// Formato de un flujo de audio (ADR-0008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStart {
+    pub stream_id: u16,
+    pub codec: AudioCodec,
+    pub sample_rate: u32,
+    pub channels: u8,
+    /// Duración de cada trama en milisegundos.
+    pub frame_ms: u8,
 }
 
 /// Tamaño máximo del texto de portapapeles sincronizado: 1 MiB en UTF-8.

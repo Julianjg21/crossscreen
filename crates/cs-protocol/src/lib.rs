@@ -4,9 +4,11 @@
 //!   postcard y enmarcados con prefijo de longitud ([`framing`]).
 //! - [`video`]: cabecera binaria fija de los fragmentos de vídeo que viajan en
 //!   datagramas QUIC.
+//! - [`audio`]: datagramas de audio Opus (ADR-0008).
 //!
 //! Ver `docs/04-protocolos-streaming.md`.
 
+pub mod audio;
 pub mod control;
 pub mod framing;
 pub mod video;
@@ -26,7 +28,9 @@ pub struct ProtocolVersion {
 /// - 0.1: MVP (vídeo, control, cursor).
 /// - 0.2: entrada remota (`ControlMessage::Input`, F6).
 /// - 0.3: portapapeles de texto (`ControlMessage::ClipboardText`, F7).
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
+/// - 0.4: audio (`AudioRequest`, `AudioStart`, `AudioStop` y datagramas de
+///   audio, ADR-0008).
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 4 };
 
 impl ProtocolVersion {
     /// Funciones que se pierden al hablar con un par de versión menor más
@@ -39,6 +43,9 @@ impl ProtocolVersion {
             }
             if peer.minor < 3 && self.minor >= 3 {
                 v.push("portapapeles");
+            }
+            if peer.minor < 4 && self.minor >= 4 {
+                v.push("audio");
             }
         }
         v

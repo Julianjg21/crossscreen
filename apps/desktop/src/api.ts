@@ -127,6 +127,7 @@ export interface ReceiverAutoStartInfo {
   port: number;
   fullscreen: boolean;
   clipboard: boolean;
+  audio?: boolean;
 }
 
 /** IPC 1.4: ajustes de arranque. */
@@ -166,9 +167,18 @@ export type Request =
       profile: StreamProfileInfo;
       clipboard: boolean;
       accept_input?: boolean;
+      /** IPC 1.5: enviar el audio del sistema si el receptor lo pide. */
+      audio?: boolean;
     }
   | { kind: "stop_stream" }
-  | { kind: "start_receiver"; port: number; fullscreen: boolean; clipboard: boolean }
+  | {
+      kind: "start_receiver";
+      port: number;
+      fullscreen: boolean;
+      clipboard: boolean;
+      /** IPC 1.5: pedir y reproducir el audio de la fuente. */
+      audio?: boolean;
+    }
   | { kind: "stop_receiver" }
   | { kind: "install_open_h264" }
   | { kind: "get_settings" }

@@ -107,6 +107,14 @@ Al terminar, **cada lado imprime un resumen**. Cópialo de los dos equipos, indi
 .\crossscreen.exe bench 192.168.1.50:47800 --peer <prefijo> --mbps 50 --seconds 10
 ```
 
+## Audio (opcional)
+
+Por defecto solo se transmite la imagen. Para oír en el receptor lo que suena en el emisor:
+- **Emisor:** marca «Enviar el audio de este equipo» (o `--audio` en `crossscreen stream`).
+- **Receptor:** marca «Reproducir el audio que envíe el emisor» en «Recibir pantalla» (o `--audio` en `crossscreen-viewer`).
+
+Hacen falta las dos casillas. Se envía todo el audio del sistema del emisor (Opus, 48 kHz estéreo, ~130 kbps). El receptor amortigua la variación de la red con un búfer de 60–160 ms que se ajusta solo y compensa la pequeña diferencia de reloj entre tarjetas de sonido. El resumen del visor indica tramas reproducidas, pérdidas ocultadas y vacíos del búfer.
+
 ## Encender y usar (arranque automático)
 
 En el panel, **Este equipo → Inicio**:

@@ -365,6 +365,8 @@ pub(crate) async fn run(
     } else {
         None
     };
+    // Audio del sistema (ADR-0008): solo si está activado y el receptor lo pide.
+    let mut audio: Option<crate::audio::AudioSender> = None;
     let end_reason: String = 'session: loop {
         let drop_reason: String = loop {
             let deferred = coalescer
@@ -458,6 +460,36 @@ pub(crate) async fn run(
                             b.deliver(t);
                         }
                     }
+                    Ok(Some(ControlMessage::AudioRequest { enabled })) => {
+                        if enabled && cfg.audio && audio.is_none() {
+                            if ctl
+                                .send(&ControlMessage::AudioStart(crate::audio::audio_start()))
+                                .await
+                                .is_ok()
+                            {
+                                match crate::audio::AudioSender::start(conn.clone()) {
+                                    Ok(a) => audio = Some(a),
+                                    Err(e) => {
+                                        tracing::warn!("audio no disponible: {e:#}");
+                                        let _ = ctl
+                                            .send(&ControlMessage::AudioStop {
+                                                stream_id: crate::audio::AUDIO_STREAM_ID,
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                        } else if !enabled {
+                            if let Some(a) = audio.take() {
+                                cs.audio_frames_sent += a.sent();
+                                let _ = ctl
+                                    .send(&ControlMessage::AudioStop {
+                                        stream_id: crate::audio::AUDIO_STREAM_ID,
+                                    })
+                                    .await;
+                            }
+                        }
+                    }
                     Ok(Some(other)) => tracing::debug!(?other, "mensaje de control ignorado"),
                     Ok(None) => {
                         peer_gone = true;
@@ -531,6 +563,10 @@ pub(crate) async fn run(
             reconn.grace.as_secs_f64()
         );
         wctl.streaming.store(false, Ordering::Relaxed);
+        // El audio iba por la conexión caída: el receptor lo pedirá de nuevo.
+        if let Some(a) = audio.take() {
+            cs.audio_frames_sent += a.sent();
+        }
         let _ = stop_video_tx.send(true);
         let (sstats, mut recovered_rx) =
             match tokio::time::timeout(Duration::from_secs(2), &mut video).await {
@@ -595,6 +631,9 @@ pub(crate) async fn run(
     let duration = start.elapsed();
     println!("Fin de la sesión: {end_reason}");
     let _ = injector.release_all();
+    if let Some(a) = audio.take() {
+        cs.audio_frames_sent += a.sent();
+    }
 
     // Cierre: Bye (si el par sigue), parar el hilo, vaciar el envío, retirar
     // el monitor.

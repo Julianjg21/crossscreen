@@ -17,6 +17,7 @@ cs-input = { path = "../cs-input" }
 cs-clipboard = { path = "../cs-clipboard" }
 cs-capture = { path = "../cs-capture" }
 cs-encode = { path = "../cs-encode" }
+cs-audio = { path = "../cs-audio" }
 anyhow.workspace = true
 bytes.workspace = true
 tokio.workspace = true
@@ -32,6 +33,7 @@ windows = { version = "0.58", features = [
 
 [target.'cfg(not(windows))'.dependencies]
 cs-capture = { path = "../cs-capture", features = ["linux-pipewire"] }
+cs-audio = { path = "../cs-audio", features = ["linux-pipewire"] }
 
 [dev-dependencies]
 cs-security.workspace = true

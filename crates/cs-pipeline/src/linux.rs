@@ -730,6 +730,8 @@ async fn session(
     };
     tokio::pin!(system_closed);
     let mut peer_gone = false;
+    // Audio del sistema (ADR-0008): solo si está activado y el receptor lo pide.
+    let mut audio: Option<crate::audio::AudioSender> = None;
     let end_reason: String = 'session: loop {
         let (drop_reason, connection_lost) = loop {
             tokio::select! {
@@ -804,6 +806,36 @@ async fn session(
                             b.deliver(t);
                         }
                     }
+                    Ok(Some(ControlMessage::AudioRequest { enabled })) => {
+                        if enabled && cfg.audio && audio.is_none() {
+                            if ctl
+                                .send(&ControlMessage::AudioStart(crate::audio::audio_start()))
+                                .await
+                                .is_ok()
+                            {
+                                match crate::audio::AudioSender::start(conn.clone()) {
+                                    Ok(a) => audio = Some(a),
+                                    Err(e) => {
+                                        tracing::warn!("audio no disponible: {e:#}");
+                                        let _ = ctl
+                                            .send(&ControlMessage::AudioStop {
+                                                stream_id: crate::audio::AUDIO_STREAM_ID,
+                                            })
+                                            .await;
+                                    }
+                                }
+                            }
+                        } else if !enabled {
+                            if let Some(a) = audio.take() {
+                                cs.audio_frames_sent += a.sent();
+                                let _ = ctl
+                                    .send(&ControlMessage::AudioStop {
+                                        stream_id: crate::audio::AUDIO_STREAM_ID,
+                                    })
+                                    .await;
+                            }
+                        }
+                    }
                     // Ping y demás: no se usan en Linux.
                     Ok(Some(_)) => {}
                     Ok(None) => break ("el receptor cerró el canal de control".to_owned(), true),
@@ -843,6 +875,10 @@ async fn session(
             reconn.grace.as_secs_f64()
         );
         worker.shared.streaming.store(false, Ordering::Relaxed);
+        // El audio iba por la conexión caída: el receptor lo pedirá de nuevo.
+        if let Some(a) = audio.take() {
+            cs.audio_frames_sent += a.sent();
+        }
         let _ = stop_video.send(true);
         let (sstats, mut recovered_rx) =
             match tokio::time::timeout(Duration::from_secs(2), &mut send_task).await {
@@ -901,6 +937,9 @@ async fn session(
             }
         }
     };
+    if let Some(a) = audio.take() {
+        cs.audio_frames_sent += a.sent();
+    }
     if !peer_gone {
         let _ = tokio::time::timeout(
             Duration::from_millis(500),
