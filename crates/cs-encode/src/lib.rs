@@ -13,7 +13,10 @@
 //! salida de un frame aparece en la misma llamada a `encode`.
 
 pub mod annexb;
+pub mod bitstream;
 pub mod h264;
+
+pub use bitstream::VideoCodec;
 
 #[cfg(windows)]
 pub mod mf;
@@ -49,6 +52,9 @@ impl H264Profile {
 /// Configuración inicial del codificador.
 #[derive(Debug, Clone)]
 pub struct EncoderConfig {
+    /// Códec de salida (ADR-0012). Media Foundation admite H.264, HEVC y
+    /// AV1 si el hardware los codifica; OpenH264, solo H.264.
+    pub codec: VideoCodec,
     pub width: u32,
     pub height: u32,
     pub fps_num: u32,
@@ -86,6 +92,7 @@ impl EncoderConfig {
     /// Configuración razonable para escritorio remoto: CBR, High, GOP de 10 s.
     pub fn desktop(width: u32, height: u32, fps: u32, bitrate_kbps: u32) -> Self {
         Self {
+            codec: VideoCodec::H264,
             width,
             height,
             fps_num: fps,

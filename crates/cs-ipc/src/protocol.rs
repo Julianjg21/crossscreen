@@ -24,7 +24,7 @@ pub struct IpcVersion {
     pub minor: u16,
 }
 
-pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 7 };
+pub const IPC_VERSION: IpcVersion = IpcVersion { major: 1, minor: 8 };
 
 /// Identificador de la compilación (`git describe`), inyectado con la variable
 /// de entorno `CROSSSCREEN_BUILD_ID` al compilar (lo hace
@@ -138,6 +138,9 @@ pub enum Request {
         /// Transferencia de archivos con el receptor (IPC 1.7, ADR-0010).
         #[serde(default)]
         files: bool,
+        /// Códec pedido (IPC 1.8, ADR-0012). Por defecto H.264.
+        #[serde(default)]
+        codec: CodecChoiceInfo,
     },
     /// Detiene la sesión emisora en curso (si la hay) y retira el monitor virtual.
     StopStream,
@@ -232,6 +235,17 @@ pub enum Event {
     },
     /// Un archivo enviado o recibido por la transmisión en curso (IPC 1.7).
     FileTransfer(FileTransferInfo),
+}
+
+/// Códec pedido para la transmisión (IPC 1.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodecChoiceInfo {
+    #[default]
+    H264,
+    Auto,
+    Hevc,
+    Av1,
 }
 
 /// Resultado de un archivo (IPC 1.7).
@@ -423,6 +437,9 @@ pub struct StreamReportInfo {
     /// Informes de los monitores 2.º en adelante (IPC 1.6); este es el del 1.º.
     #[serde(default)]
     pub other_monitors: Vec<StreamReportInfo>,
+    /// Códec usado: «H.264», «HEVC» o «AV1» (IPC 1.8).
+    #[serde(default)]
+    pub codec: Option<String>,
 }
 
 /// Recepción automática al arrancar el agente (IPC 1.4).
@@ -592,6 +609,7 @@ mod tests {
                 audio: false,
                 monitors: 2,
                 files: true,
+                codec: CodecChoiceInfo::Hevc,
             },
             Request::StopStream,
             Request::StartReceiver {
@@ -770,6 +788,7 @@ mod tests {
                         receiver_decode_us: Some(681),
                         error: None,
                         other_monitors: Vec::new(),
+                        codec: Some("HEVC".into()),
                     }),
                 },
             },

@@ -764,6 +764,7 @@ pub(crate) async fn run(
     };
     tracing::info!("fin de la transmisión: {end_reason}");
     Ok(SenderReport {
+        codec: cs_core::Codec::H264,
         duration: started_at.elapsed(),
         end_reason,
         worker: worker_stats,
@@ -796,6 +797,11 @@ async fn session(
     let sink = expect_sink(&mut ctl).await?;
     if !sink.decoders.iter().any(|d| d.codec == Codec::H264) {
         bail!("el receptor no anuncia decodificador H.264");
+    }
+    if cfg.codec != crate::codec::CodecChoice::H264 {
+        let w = "en Linux el emisor solo codifica H.264 (OpenH264); se usa H.264";
+        eprintln!("AVISO: {w}");
+        tracing::warn!("{w}");
     }
     let stream_mode = if let Some(backend) = prepared.extend {
         // Extender: el monitor virtual toma la resolución del receptor. El

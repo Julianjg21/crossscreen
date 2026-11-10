@@ -20,10 +20,12 @@
 pub mod annexb;
 pub mod stats;
 
+pub use cs_core::Codec;
+
 #[cfg(windows)]
 mod windows_mf;
 #[cfg(windows)]
-pub use windows_mf::{create_d3d11_device, DecodedFrame, VideoDecoder};
+pub use windows_mf::{create_d3d11_device, supported_codecs, DecodedFrame, VideoDecoder};
 
 #[cfg(not(windows))]
 mod openh264_backend;

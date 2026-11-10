@@ -18,3 +18,4 @@ Un ADR aceptado no se edita: si la decisión cambia, se escribe uno nuevo que lo
 | [0009](0009-varios-monitores.md) | Varios monitores por sesión como sesiones paralelas | Aceptada |
 | [0010](0010-transferencia-de-archivos.md) | Transferencia de archivos por streams QUIC, opcional en los dos lados | Aceptada |
 | [0011](0011-extender-kde-sway.md) | Extender el escritorio en KDE Plasma y Sway | Aceptada |
+| [0012](0012-hevc-av1.md) | HEVC y AV1 por hardware, opcionales y negociados | Aceptada |

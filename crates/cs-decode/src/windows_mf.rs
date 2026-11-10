@@ -17,6 +17,7 @@
 #![allow(unsafe_code)] // FFI COM/Media Foundation/D3D11; cada bloque unsafe está acotado y comentado.
 
 use crate::{DecodeError, Result};
+use cs_core::Codec;
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
@@ -35,6 +36,97 @@ use windows::Win32::System::Com::{
 /// `CLSID_CMSH264DecoderMFT` ({62CE7E72-4C71-4D20-B15D-452831A87D9D}); no
 /// está en `windows` 0.58.
 const CLSID_CMSH264_DECODER_MFT: GUID = GUID::from_u128(0x62ce7e72_4c71_4d20_b15d_452831a87d9d);
+
+/// Subtipo de Media Foundation de cada códec.
+fn codec_subtype(codec: Codec) -> GUID {
+    match codec {
+        Codec::H264 => MFVideoFormat_H264,
+        Codec::Hevc => MFVideoFormat_HEVC,
+        Codec::Av1 => MFVideoFormat_AV1,
+    }
+}
+
+/// Busca un MFT decodificador síncrono de `codec` con salida NV12 y
+/// aceleración D3D11 (en Windows los de HEVC y AV1 los instalan las
+/// extensiones de vídeo de la Microsoft Store o el fabricante de la GPU).
+fn find_decoder(codec: Codec) -> Result<IMFTransform> {
+    let input = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: codec_subtype(codec),
+    };
+    let output = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: MFVideoFormat_NV12,
+    };
+    let mut arr: *mut Option<IMFActivate> = std::ptr::null_mut();
+    let mut count = 0u32;
+    // SAFETY: punteros de salida válidos; MF reserva el array con CoTaskMemAlloc.
+    unsafe {
+        MFTEnumEx(
+            MFT_CATEGORY_VIDEO_DECODER,
+            MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+            Some(&input),
+            Some(&output),
+            &mut arr,
+            &mut count,
+        )
+    }
+    .ctx("MFTEnumEx(decoder)")?;
+    let mut found = None;
+    for i in 0..count as usize {
+        // SAFETY: `arr` tiene `count` elementos; `read` toma la propiedad.
+        let Some(act) = (unsafe { std::ptr::read(arr.add(i)) }) else {
+            continue;
+        };
+        if found.is_some() {
+            continue; // soltar el resto
+        }
+        // SAFETY: activación de un MFT enumerado.
+        let Ok(mft) = (unsafe { act.ActivateObject::<IMFTransform>() }) else {
+            continue;
+        };
+        // SAFETY: lectura de atributos de un MFT válido.
+        let aware = unsafe { mft.GetAttributes() }
+            .ok()
+            .and_then(|a| unsafe { a.GetUINT32(&MF_SA_D3D11_AWARE) }.ok())
+            .unwrap_or(0)
+            != 0;
+        if aware {
+            found = Some(mft);
+        }
+    }
+    if !arr.is_null() {
+        // SAFETY: liberar el array reservado por MFTEnumEx.
+        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(arr as *const _)) };
+    }
+    found.ok_or_else(|| {
+        DecodeError::Unsupported(format!(
+            "no hay decodificador {codec:?} con aceleración D3D11 (en Windows: extensión de vídeo {} de la Microsoft Store)",
+            match codec {
+                Codec::Hevc => "HEVC",
+                Codec::Av1 => "AV1",
+                Codec::H264 => "H.264",
+            }
+        ))
+    })
+}
+
+/// Códecs que este equipo decodifica por hardware sobre `device`. Prueba a
+/// crear cada decodificador (lo que de verdad importa: que acepte D3D11).
+pub fn supported_codecs(device: &ID3D11Device) -> Vec<Codec> {
+    [Codec::H264, Codec::Hevc, Codec::Av1]
+        .into_iter()
+        .filter(
+            |c| match VideoDecoder::new_for(*c, device, Some((1280, 720))) {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::info!("decodificador {c:?} no disponible: {e}");
+                    false
+                }
+            },
+        )
+        .collect()
+}
 
 pub(crate) trait HrContext<T> {
     fn ctx(self, call: &'static str) -> Result<T>;
@@ -142,9 +234,12 @@ pub struct DecodedFrame {
 // textura desde otro hilo queda serializado por el runtime.
 unsafe impl Send for DecodedFrame {}
 
-/// Decodificador H.264 por hardware (Media Foundation + D3D11).
+/// Decodificador por hardware (Media Foundation + D3D11): H.264 con el MFT
+/// de Microsoft; HEVC y AV1 con el que haya instalado (extensiones de vídeo
+/// de Windows), siempre con DXVA (ADR-0012).
 #[derive(Debug)]
 pub struct VideoDecoder {
+    codec: Codec,
     mft: IMFTransform,
     _manager: IMFDXGIDeviceManager,
     context: ID3D11DeviceContext,
@@ -170,20 +265,35 @@ impl VideoDecoder {
     /// primero superficies 1920×1080 por defecto y sufra una parada de ~450 ms
     /// (`MF_E_TRANSFORM_STREAM_CHANGE`) al llegar el primer IDR de otro tamaño.
     pub fn new_with_size(device: &ID3D11Device, initial_size: Option<(u32, u32)>) -> Result<Self> {
+        Self::new_for(Codec::H264, device, initial_size)
+    }
+
+    /// Decodificador de `codec` sobre `device`. Falla con
+    /// [`DecodeError::Unsupported`] si el sistema no tiene un decodificador
+    /// de ese códec con aceleración D3D11.
+    pub fn new_for(
+        codec: Codec,
+        device: &ID3D11Device,
+        initial_size: Option<(u32, u32)>,
+    ) -> Result<Self> {
         ensure_mf_started()?;
         // SAFETY: todas las llamadas COM de este bloque reciben interfaces
         // válidas y punteros de salida locales.
         unsafe {
-            let mft: IMFTransform =
-                CoCreateInstance(&CLSID_CMSH264_DECODER_MFT, None, CLSCTX_INPROC_SERVER)
-                    .ctx("CoCreateInstance(CMSH264DecoderMFT)")?;
+            let mft: IMFTransform = match codec {
+                Codec::H264 => {
+                    CoCreateInstance(&CLSID_CMSH264_DECODER_MFT, None, CLSCTX_INPROC_SERVER)
+                        .ctx("CoCreateInstance(CMSH264DecoderMFT)")?
+                }
+                other => find_decoder(other)?,
+            };
 
             let attrs = mft.GetAttributes().ctx("IMFTransform::GetAttributes")?;
             let d3d11_aware = attrs.GetUINT32(&MF_SA_D3D11_AWARE).unwrap_or(0) != 0;
             if !d3d11_aware {
-                return Err(DecodeError::Unsupported(
-                    "el MFT H.264 no es D3D11-aware".into(),
-                ));
+                return Err(DecodeError::Unsupported(format!(
+                    "el MFT {codec:?} no es D3D11-aware"
+                )));
             }
             attrs
                 .SetUINT32(&MF_LOW_LATENCY, 1)
@@ -226,7 +336,7 @@ impl VideoDecoder {
                 .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
                 .ctx("SetGUID(major)")?;
             in_type
-                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .SetGUID(&MF_MT_SUBTYPE, &codec_subtype(codec))
                 .ctx("SetGUID(subtype)")?;
             in_type
                 .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
@@ -253,6 +363,7 @@ impl VideoDecoder {
             let query = query.ok_or_else(|| DecodeError::Unexpected("sin query".into()))?;
 
             let mut dec = Self {
+                codec,
                 mft,
                 _manager: manager,
                 context,
@@ -280,6 +391,11 @@ impl VideoDecoder {
     /// [`DecodedFrame::gpu_done_time`]. Serializa CPU y GPU: solo para medir.
     pub fn set_measure_gpu(&mut self, on: bool) {
         self.measure_gpu = on;
+    }
+
+    /// Códec que decodifica.
+    pub fn codec(&self) -> Codec {
+        self.codec
     }
 
     /// Resolución visible actual (0×0 hasta el primer frame).

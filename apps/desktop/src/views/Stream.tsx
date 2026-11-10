@@ -4,6 +4,7 @@ import {
   errorMessage,
   onAgentEvent,
   type AgentStatus,
+  type CodecChoice,
   type DiscoveredDevice,
   type LatencySummary,
   type ModeInfo,
@@ -100,6 +101,8 @@ export default function Stream({
   const [rxScreens, setRxScreens] = useState(1);
   // Transferencia de archivos (ADR-0010): desactivada por defecto.
   const [files, setFiles] = useState(false);
+  // Códec (ADR-0012): H.264 por defecto.
+  const [codec, setCodec] = useState<CodecChoice>("h264");
   const [rxFiles, setRxFiles] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rxBusy, setRxBusy] = useState(false);
@@ -267,6 +270,7 @@ export default function Stream({
           audio,
           monitors: mode === "extend" ? monitors : 1,
           files,
+          codec,
         },
         "stream_started",
       );
@@ -623,6 +627,31 @@ export default function Stream({
                 por defecto; el receptor también debe activarlo.
               </p>
 
+              {status.platform === "windows" && (
+                <>
+                  <label htmlFor="stream-codec" style={{ marginTop: 12 }}>
+                    Códec de vídeo
+                  </label>
+                  <select
+                    id="stream-codec"
+                    value={codec}
+                    onChange={(e) => setCodec(e.target.value as CodecChoice)}
+                    aria-describedby="stream-codec-help"
+                  >
+                    <option value="h264">H.264 (por defecto, compatible con todo)</option>
+                    <option value="auto">Automático (el más eficiente que tengan los dos)</option>
+                    <option value="hevc">HEVC (H.265)</option>
+                    <option value="av1">AV1</option>
+                  </select>
+                  <p id="stream-codec-help" className="muted" style={{ marginTop: 4 }}>
+                    HEVC y AV1 dan la misma calidad con menos ancho de banda (útil en Wi-Fi). Solo
+                    se usan si este equipo los codifica por hardware y el receptor los decodifica
+                    (en Windows, con las extensiones de vídeo HEVC/AV1 de la Microsoft Store); si
+                    no, se usa H.264. Un receptor Linux siempre recibe H.264.
+                  </p>
+                </>
+              )}
+
               <label htmlFor="stream-profile" style={{ marginTop: 12 }}>
                 Perfil de red
               </label>
@@ -826,6 +855,12 @@ export default function Stream({
               <dd>
                 {lastReport.peer_name} (<code>{lastReport.remote_addr}</code>)
               </dd>
+              {lastReport.codec && (
+                <>
+                  <dt>Códec</dt>
+                  <dd>{lastReport.codec}</dd>
+                </>
+              )}
               <dt>Duración y fin</dt>
               <dd>
                 {(lastReport.duration_ms / 1000).toFixed(1)} s — {lastReport.end_reason}
@@ -873,7 +908,7 @@ export default function Stream({
                       (lastReport.duration_ms / 1000) /
                       1e6
                     ).toFixed(2)}{" "}
-                    Mbps H.264 ·{" "}
+                    Mbps {lastReport.codec ?? "H.264"} ·{" "}
                     {(
                       (lastReport.wire_bytes * 8) /
                       (lastReport.duration_ms / 1000) /

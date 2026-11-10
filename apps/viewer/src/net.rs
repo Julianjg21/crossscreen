@@ -63,6 +63,8 @@ pub struct NetConfig {
     pub announce: bool,
     /// Transferencia de archivos con la fuente (ADR-0010).
     pub files: bool,
+    /// Códecs que se anuncian a la fuente (ADR-0012).
+    pub decoder_codecs: Vec<Codec>,
 }
 
 /// Cola de archivos del visor: sobrevive a las sesiones.
@@ -576,14 +578,18 @@ async fn session(
     }))
     .await?;
     // 3. Capacidades.
+    let codecs = &cfg.decoder_codecs;
     ctl.send(&ControlMessage::SinkCapabilities(SinkCapabilities {
-        decoders: vec![CodecSupport {
-            codec: Codec::H264,
-            max_h264_profile: Some(H264Profile::High),
-            hardware: true,
-            // Verificado hasta 2160p60 en la PoC-5 (Iris Xe).
-            max_pixel_rate: 3840 * 2160 * 60,
-        }],
+        decoders: codecs
+            .iter()
+            .map(|&codec| CodecSupport {
+                codec,
+                max_h264_profile: (codec == Codec::H264).then_some(H264Profile::High),
+                hardware: cfg!(windows),
+                // Verificado hasta 2160p60 en la PoC-5 (Iris Xe).
+                max_pixel_rate: 3840 * 2160 * 60,
+            })
+            .collect(),
         native_mode: cfg.native_mode,
         dpi: cfg.dpi,
     }))
@@ -608,7 +614,7 @@ async fn session(
     let m = start.display_mode;
     let mode_ok = (Mode::MIN_DIM..=Mode::MAX_DIM).contains(&m.width)
         && (Mode::MIN_DIM..=Mode::MAX_DIM).contains(&m.height);
-    if start.stream_id != STREAM_ID || start.codec != Codec::H264 || !mode_ok {
+    if start.stream_id != STREAM_ID || !codecs.contains(&start.codec) || !mode_ok {
         let reason = format!(
             "no soportado: stream_id {} (se espera {STREAM_ID}), códec {:?}, modo {}x{}",
             start.stream_id, start.codec, m.width, m.height
@@ -622,8 +628,9 @@ async fn session(
         bail!(reason);
     }
     cs_log::out!(
-        "StartStream: {:?}, {}x{}@{:.2} Hz, {} kb/s",
+        "StartStream: {:?}, {:?}, {}x{}@{:.2} Hz, {} kb/s",
         start.mode,
+        start.codec,
         m.width,
         m.height,
         f64::from(m.refresh_mhz) / 1000.0,
@@ -639,6 +646,7 @@ async fn session(
         .send_event(UserEvent::Start(
             Box::new(StartSession {
                 display_mode: m,
+                codec: start.codec,
                 peer: format!("{} ({})", h.device_name, conn.peer_fingerprint().short()),
                 decode_rx,
                 keyframe_tx,

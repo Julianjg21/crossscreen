@@ -271,6 +271,7 @@ impl Agent {
                 audio,
                 monitors,
                 files,
+                codec,
             } => {
                 self.start_stream(
                     &addr,
@@ -284,6 +285,7 @@ impl Agent {
                     audio,
                     monitors,
                     files,
+                    codec,
                 )
                 .await
             }
@@ -668,6 +670,7 @@ impl Agent {
         audio: bool,
         monitors: u8,
         files: bool,
+        codec: cs_ipc::CodecChoiceInfo,
     ) -> Result<Response, IpcError> {
         if !cfg!(any(windows, target_os = "linux")) {
             return Err(err(
@@ -758,6 +761,12 @@ impl Agent {
         cfg.bitrate_kbps = bitrate_kbps;
         cfg.clipboard = clipboard;
         cfg.audio = audio;
+        cfg.codec = match codec {
+            cs_ipc::CodecChoiceInfo::H264 => cs_pipeline::codec::CodecChoice::H264,
+            cs_ipc::CodecChoiceInfo::Auto => cs_pipeline::codec::CodecChoice::Auto,
+            cs_ipc::CodecChoiceInfo::Hevc => cs_pipeline::codec::CodecChoice::Hevc,
+            cs_ipc::CodecChoiceInfo::Av1 => cs_pipeline::codec::CodecChoice::Av1,
+        };
         // Archivos (ADR-0010): cola de salida y eventos hacia el panel.
         let files_tx = if files {
             let inbox = cs_files::inbox_dir().ok_or_else(|| {
@@ -1370,6 +1379,7 @@ fn build_stream_report(
                 receiver_decode_us: rs.map(|x| x.decode_time_us),
                 error: w.fatal.clone(),
                 other_monitors: Vec::new(),
+                codec: Some(cs_pipeline::codec::codec_name(r.codec).to_owned()),
             }
         }
         Err(e) => StreamReportInfo {
@@ -1402,6 +1412,7 @@ fn build_stream_report(
             receiver_decode_us: None,
             error: Some(format!("{e:#}")),
             other_monitors: Vec::new(),
+            codec: None,
         },
     }
 }

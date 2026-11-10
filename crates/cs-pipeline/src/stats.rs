@@ -108,6 +108,8 @@ pub struct ControlStats {
 /// Informe final del emisor.
 #[derive(Debug, Clone, Default)]
 pub struct SenderReport {
+    /// Códec usado (ADR-0012).
+    pub codec: cs_core::Codec,
     pub duration: Duration,
     pub end_reason: String,
     pub worker: WorkerStats,
@@ -140,6 +142,11 @@ impl fmt::Display for SenderReport {
             "── Emisor: resumen ({:.1} s, fin: {}) ──",
             secs, r.end_reason
         )?;
+        writeln!(
+            f,
+            "Códec:                   {}",
+            crate::codec::codec_name(r.codec)
+        )?;
         if let Some((wd, ht)) = w.last_size {
             writeln!(f, "Tamaño capturado:        {wd}x{ht}")?;
         }
@@ -170,8 +177,9 @@ impl fmt::Display for SenderReport {
         )?;
         writeln!(
             f,
-            "Bitrate real: {:.2} Mbps H.264 · {:.2} Mbps en datagramas (con FEC y cabeceras)",
+            "Bitrate real: {:.2} Mbps {} · {:.2} Mbps en datagramas (con FEC y cabeceras)",
             s.payload_bytes as f64 * 8.0 / secs / 1e6,
+            crate::codec::codec_name(r.codec),
             s.wire_bytes as f64 * 8.0 / secs / 1e6
         )?;
         let avg = |b: u64, n: u64| {

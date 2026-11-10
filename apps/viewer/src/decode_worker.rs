@@ -49,6 +49,7 @@ const MAX_QUEUE_LAG: Duration = Duration::from_millis(250);
 /// Lo que necesita el hilo.
 pub struct Worker {
     pub device: crate::platform::VideoContext,
+    pub codec: cs_core::Codec,
     pub initial_size: Option<(u32, u32)>,
     pub input: Receiver<DecodeInput>,
     pub mailbox: Arc<Mailbox>,
@@ -70,7 +71,7 @@ struct Episode {
 /// Cuerpo del hilo. `ready` recibe el resultado de crear el decodificador.
 /// Termina cuando la red suelta su extremo del canal (fin de sesión).
 pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
-    let mut decoder = match VideoDecoder::new_with_size(&w.device, w.initial_size) {
+    let mut decoder = match VideoDecoder::new_for(w.codec, &w.device, w.initial_size) {
         Ok(d) => {
             let _ = ready.send(Ok(()));
             d
@@ -136,7 +137,10 @@ pub fn run(w: Worker, ready: std::sync::mpsc::Sender<Result<(), String>>) {
                 });
             }
             DecodeInput::Frame { frame, received_at } => {
-                let key = frame.keyframe || is_idr(&frame.data);
+                // La marca de clave viene en la cabecera de vídeo; mirar las
+                // NAL solo sirve de respaldo en H.264.
+                let key =
+                    frame.keyframe || (w.codec == cs_core::Codec::H264 && is_idr(&frame.data));
                 if need_idr && !key {
                     stats(&mut |s| s.dropped_waiting_idr += 1);
                     signal(KeyframeSignal::Needed {

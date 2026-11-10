@@ -148,6 +148,26 @@ pub(crate) async fn run(
             .await;
         bail!("el receptor no anuncia decodificador H.264");
     }
+    // Códec (ADR-0012): H.264 salvo que se pida otro y lo soporten los dos.
+    let mut cfg = cfg;
+    if cfg.codec != crate::codec::CodecChoice::H264 {
+        let remote: Vec<Codec> = sink.decoders.iter().map(|d| d.codec).collect();
+        let local = tokio::task::spawn_blocking(|| {
+            cs_encode::mf::create_d3d11_device(None)
+                .map(|s| cs_encode::mf::hw_encoder_codecs(&s.device))
+                .unwrap_or_else(|_| vec![Codec::H264])
+        })
+        .await
+        .unwrap_or_else(|_| vec![Codec::H264]);
+        let (chosen, why) = crate::codec::choose(cfg.codec, &local, &remote);
+        if let Some(w) = why {
+            println!("AVISO: {w}");
+            tracing::warn!("{w}");
+        }
+        tracing::info!(?local, ?remote, ?chosen, "códec elegido");
+        cfg.negotiated_codec = chosen;
+    }
+    println!("Códec: {}", crate::codec::codec_name(cfg.negotiated_codec));
 
     // Monitor: virtual (extend) o principal (duplicate). La guardia se
     // declara ANTES que el hilo para que se suelte DESPUÉS de pararlo.
@@ -212,6 +232,7 @@ pub(crate) async fn run(
             stream_id: STREAM_ID,
             static_refresh: cfg.static_refresh,
             intra_refresh: cfg.intra_refresh,
+            codec: cfg.negotiated_codec,
         },
         WorkerOutputs {
             video: video_tx,
@@ -259,7 +280,7 @@ pub(crate) async fn run(
     ctl.send(&ControlMessage::StartStream(StartStream {
         stream_id: STREAM_ID,
         mode: cfg.mode,
-        codec: Codec::H264,
+        codec: cfg.negotiated_codec,
         display_mode,
         bitrate_kbps: cfg.bitrate_kbps,
     }))
@@ -673,6 +694,7 @@ pub(crate) async fn run(
     let _ = tokio::time::timeout(Duration::from_millis(300), conn.closed()).await;
     conn.close(b"bye");
     Ok(SenderReport {
+        codec: cfg.negotiated_codec,
         duration,
         end_reason,
         worker: wstats,

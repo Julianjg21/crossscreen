@@ -123,6 +123,20 @@ impl VideoDecoder {
         Self::new_with_size(ctx, None)
     }
 
+    /// Como en Windows; OpenH264 solo decodifica H.264.
+    pub fn new_for(
+        codec: cs_core::Codec,
+        ctx: &DecoderContext,
+        initial_size: Option<(u32, u32)>,
+    ) -> Result<Self> {
+        if codec != cs_core::Codec::H264 {
+            return Err(crate::DecodeError::Unsupported(format!(
+                "OpenH264 no decodifica {codec:?}"
+            )));
+        }
+        Self::new_with_size(ctx, initial_size)
+    }
+
     /// `initial_size` se acepta por compatibilidad con Windows; OpenH264 toma
     /// el tamaño del SPS.
     pub fn new_with_size(ctx: &DecoderContext, initial_size: Option<(u32, u32)>) -> Result<Self> {

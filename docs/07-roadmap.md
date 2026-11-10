@@ -107,7 +107,7 @@ Para 1.0, además: auditoría de seguridad externa, firma de código e instalado
 
 ### F8: Avanzado (≈ 10 semanas)
 - Driver IddCx propio (atestación de Microsoft, acceso a la *swap chain*, selección de adaptador).
-- HEVC y AV1.
+- HEVC y AV1. ✅ por hardware en Windows, opcionales y negociados (ADR-0012); en Linux, pendiente (VAAPI).
 - HDR.
 - Receptor web opcional (WebTransport + WebCodecs).
 - **Salida:** según el ADR correspondiente en el momento.

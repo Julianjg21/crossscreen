@@ -206,6 +206,11 @@ impl ListenApp {
             audio: self.args.audio,
             announce: !self.args.no_announce,
             files: self.args.files,
+            decoder_codecs: {
+                let c = crate::platform::decoder_codecs();
+                cs_log::out!("decodificadores disponibles: {c:?}");
+                c
+            },
         };
         self.net = Some(net::spawn(cfg, self.proxy.clone(), cmd_rx)?);
         self.net_cmd = Some(cmd_tx);
@@ -250,6 +255,7 @@ impl ListenApp {
         let worker = Worker {
             device: self.device.clone(),
             initial_size: Some((s.display_mode.width, s.display_mode.height)),
+            codec: s.codec,
             input: s.decode_rx,
             mailbox: mailbox.clone(),
             proxy: self.proxy.clone(),

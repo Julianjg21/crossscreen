@@ -37,6 +37,8 @@ pub enum UserEvent {
 #[derive(Debug)]
 pub struct StartSession {
     pub display_mode: Mode,
+    /// Códec del flujo (ADR-0012).
+    pub codec: cs_core::Codec,
     pub peer: String,
     pub decode_rx: Receiver<DecodeInput>,
     pub keyframe_tx: tokio::sync::mpsc::UnboundedSender<KeyframeSignal>,

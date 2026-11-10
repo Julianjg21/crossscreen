@@ -54,6 +54,8 @@ pub struct WorkerParams {
     pub stream_id: StreamId,
     pub static_refresh: Option<Duration>,
     pub intra_refresh: Option<u32>,
+    /// Códec acordado con el receptor (ADR-0012).
+    pub codec: cs_core::Codec,
 }
 
 /// Órdenes del lado async al hilo.
@@ -283,11 +285,13 @@ impl Worker {
         let mut cfg =
             EncoderConfig::desktop(size.0, size.1, self.params.fps, self.params.bitrate_kbps);
         cfg.intra_refresh = self.params.intra_refresh;
+        cfg.codec = self.params.codec;
         let inner = MfH264Encoder::new(cap.device(), cfg).map_err(|e| e.to_string())?;
         tracing::info!(
             encoder = %inner.caps().info.friendly_name,
             nv12_bind = inner.nv12_bind_flags(),
-            "codificador H.264 listo"
+            codec = ?self.params.codec,
+            "codificador listo"
         );
         self.st.encoders_created += 1;
         self.enc = Some(Encoder {

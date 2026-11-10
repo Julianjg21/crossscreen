@@ -71,6 +71,8 @@ export interface DisplayInfo {
 }
 
 export type StreamModeInfo = "extend" | "duplicate";
+/** IPC 1.8: códec de vídeo pedido. */
+export type CodecChoice = "h264" | "auto" | "hevc" | "av1";
 export type StreamProfileInfo = "auto" | "wifi" | "lan" | "saver";
 
 export interface StreamSessionInfo {
@@ -137,6 +139,8 @@ export interface StreamReportInfo {
   error: string | null;
   /** IPC 1.6: informes de los monitores 2.º en adelante. */
   other_monitors?: StreamReportInfo[];
+  /** IPC 1.8: códec usado («H.264», «HEVC», «AV1»). */
+  codec?: string | null;
 }
 
 /** IPC 1.4: recepción automática al arrancar el agente. */
@@ -196,6 +200,8 @@ export type Request =
       monitors?: number;
       /** IPC 1.7: transferencia de archivos con el receptor. */
       files?: boolean;
+      /** IPC 1.8: códec pedido (por defecto h264). */
+      codec?: CodecChoice;
     }
   | { kind: "stop_stream" }
   | {

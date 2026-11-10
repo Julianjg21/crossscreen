@@ -16,7 +16,7 @@
 
 pub mod convert;
 
-use crate::annexb;
+use crate::bitstream::{self, VideoCodec};
 use crate::{
     EncodeControl, EncodeError, EncodedUnit, EncoderCaps, EncoderConfig, EncoderInfo, H264Profile,
     PropertyOutcome, PropertyReport, Result, VideoEncoder,
@@ -167,8 +167,49 @@ fn get_string(attrs: &IMFAttributes, key: &GUID) -> Option<String> {
     s
 }
 
+/// Subtipo de Media Foundation de cada códec.
+pub fn codec_subtype(codec: VideoCodec) -> GUID {
+    match codec {
+        VideoCodec::H264 => MFVideoFormat_H264,
+        VideoCodec::Hevc => MFVideoFormat_HEVC,
+        VideoCodec::Av1 => MFVideoFormat_AV1,
+    }
+}
+
 /// Enumera los MFT codificadores H.264 por hardware (entrada NV12).
 pub fn enumerate_hw_h264_encoders() -> Result<Vec<(EncoderInfo, IMFActivate)>> {
+    enumerate_hw_encoders(VideoCodec::H264)
+}
+
+/// Códecs que este equipo codifica por hardware sobre `device`.
+///
+/// No basta con que el MFT esté registrado: algunos drivers registran
+/// codificadores que el hardware no tiene (p. ej. AV1 en Intel de 12.ª
+/// generación, que falla al empezar el *streaming*). Se crea de verdad un
+/// codificador pequeño de cada códec.
+pub fn hw_encoder_codecs(device: &ID3D11Device) -> Vec<VideoCodec> {
+    [VideoCodec::H264, VideoCodec::Hevc, VideoCodec::Av1]
+        .into_iter()
+        .filter(|c| {
+            if !enumerate_hw_encoders(*c).is_ok_and(|l| !l.is_empty()) {
+                return false;
+            }
+            let mut cfg = EncoderConfig::desktop(640, 360, 30, 1_000);
+            cfg.codec = *c;
+            cfg.raise_timer_resolution = false;
+            match MfH264Encoder::new(device, cfg) {
+                Ok(_) => true,
+                Err(e) => {
+                    tracing::info!("codificador {c:?} registrado pero no utilizable: {e}");
+                    false
+                }
+            }
+        })
+        .collect()
+}
+
+/// Enumera los MFT codificadores por hardware de `codec` (entrada NV12).
+pub fn enumerate_hw_encoders(codec: VideoCodec) -> Result<Vec<(EncoderInfo, IMFActivate)>> {
     mf_startup()?;
     let input = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
@@ -176,7 +217,7 @@ pub fn enumerate_hw_h264_encoders() -> Result<Vec<(EncoderInfo, IMFActivate)>> {
     };
     let output = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,
-        guidSubtype: MFVideoFormat_H264,
+        guidSubtype: codec_subtype(codec),
     };
     let mut arr: *mut Option<IMFActivate> = std::ptr::null_mut();
     let mut count = 0u32;
@@ -216,6 +257,18 @@ pub fn enumerate_hw_h264_encoders() -> Result<Vec<(EncoderInfo, IMFActivate)>> {
     // SAFETY: empareja el MFStartup de esta función.
     let _ = unsafe { MFShutdown() };
     Ok(out)
+}
+
+/// Parámetros de secuencia del `MF_MT_MPEG_SEQUENCE_HEADER` del tipo de
+/// salida. En AV1 puede venir como `av1C` (ISO-BMFF): 4 bytes de
+/// configuración (`0x81` = marcador + versión 1) seguidos de las OBU.
+fn sequence_parameter_sets(codec: VideoCodec, sh: &[u8]) -> Vec<u8> {
+    match codec {
+        VideoCodec::Av1 if sh.first() == Some(&0x81) && sh.len() > 4 => {
+            bitstream::parameter_sets(codec, &sh[4..])
+        }
+        _ => bitstream::parameter_sets(codec, sh),
+    }
 }
 
 /// Formatea un VARIANT como "valor (vt=N)".
@@ -488,11 +541,12 @@ impl MfH264Encoder {
 
         // Elegir MFT: mismo LUID que el dispositivo; si no, el primero.
         let luid = device_luid(device);
-        let mut list = enumerate_hw_h264_encoders()?;
+        let mut list = enumerate_hw_encoders(cfg.codec)?;
         if list.is_empty() {
-            return Err(EncodeError::NoEncoder(
-                "MFTEnumEx no devolvió ningún MFT H.264 hardware".into(),
-            ));
+            return Err(EncodeError::NoEncoder(format!(
+                "MFTEnumEx no devolvió ningún MFT {:?} hardware",
+                cfg.codec
+            )));
         }
         for (info, _) in &list {
             tracing::info!(
@@ -584,12 +638,21 @@ impl MfH264Encoder {
                 CODECAPI_AVEncMPVDefaultBPictureCount,
                 VARIANT::from(0u32),
             ),
-            (
+        ]);
+        // Perfil: H.264 el pedido; HEVC Main 4:2:0 8 bits; AV1 el del driver.
+        match cfg.codec {
+            VideoCodec::H264 => wanted.push((
                 "CODECAPI_AVEncMPVProfile",
                 CODECAPI_AVEncMPVProfile,
                 VARIANT::from(profile_value(cfg.profile)),
-            ),
-        ]);
+            )),
+            VideoCodec::Hevc => wanted.push((
+                "CODECAPI_AVEncMPVProfile (HEVC Main)",
+                CODECAPI_AVEncMPVProfile,
+                VARIANT::from(eAVEncH265VProfile_Main_420_8.0 as u32),
+            )),
+            VideoCodec::Av1 => {}
+        }
         if let Some(frames) = cfg.vbv_frames {
             let bits = (bps as f64 * frames as f64 * cfg.fps_den as f64 / cfg.fps_num as f64)
                 .round() as u32;
@@ -599,7 +662,7 @@ impl MfH264Encoder {
                 VARIANT::from(bits),
             ));
         }
-        if cfg.profile != H264Profile::Baseline {
+        if cfg.codec == VideoCodec::H264 && cfg.profile != H264Profile::Baseline {
             wanted.push((
                 "CODECAPI_AVEncH264CABACEnable",
                 CODECAPI_AVEncH264CABACEnable,
@@ -627,7 +690,7 @@ impl MfH264Encoder {
             }
         }
 
-        // Tipo de salida (H.264) primero, como exige el codificador.
+        // Tipo de salida (el códec) primero, como exige el codificador.
         // SAFETY: creación y configuración de tipos de medio.
         let out_type =
             unsafe { MFCreateMediaType() }.map_err(|e| hr_err("MFCreateMediaType", e))?;
@@ -635,14 +698,21 @@ impl MfH264Encoder {
         // SAFETY: atributos sobre un tipo válido.
         unsafe {
             out_type
-                .SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)
+                .SetGUID(&MF_MT_SUBTYPE, &codec_subtype(cfg.codec))
                 .and_then(|_| out_type.SetUINT32(&MF_MT_AVG_BITRATE, bps))
-                .and_then(|_| out_type.SetUINT32(&MF_MT_MPEG2_PROFILE, profile_value(cfg.profile)))
+                .and_then(|_| match cfg.codec {
+                    VideoCodec::H264 => {
+                        out_type.SetUINT32(&MF_MT_MPEG2_PROFILE, profile_value(cfg.profile))
+                    }
+                    VideoCodec::Hevc => out_type
+                        .SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH265VProfile_Main_420_8.0 as u32),
+                    VideoCodec::Av1 => Ok(()),
+                })
         }
-        .map_err(|e| hr_err("tipo de salida H.264", e))?;
+        .map_err(|e| hr_err("tipo de salida", e))?;
         // SAFETY: tipo válido.
         unsafe { transform.SetOutputType(out_stream, &out_type, 0) }
-            .map_err(|e| hr_err("SetOutputType(H264)", e))?;
+            .map_err(|e| hr_err("SetOutputType(códec)", e))?;
 
         // Tipo de entrada: el NV12 que ofrezca el MFT, con nuestras dimensiones.
         let mut in_type = None;
@@ -782,7 +852,7 @@ impl MfH264Encoder {
             sequence_header_in_type: !sequence_header.is_empty(),
             properties,
         };
-        let parameter_sets = annexb::extract_parameter_sets(&sequence_header);
+        let parameter_sets = sequence_parameter_sets(cfg.codec, &sequence_header);
         Ok(Self {
             current_bitrate_kbps: cfg.bitrate_kbps,
             cfg,
@@ -898,7 +968,7 @@ impl MfH264Encoder {
             .map_err(|e| hr_err("SetOutputType (renegociación)", e))?;
         let sh = read_sequence_header(&t);
         if !sh.is_empty() {
-            self.parameter_sets = annexb::extract_parameter_sets(&sh);
+            self.parameter_sets = sequence_parameter_sets(self.cfg.codec, &sh);
             self.sequence_header = sh;
             self.caps.sequence_header_in_type = true;
         }
@@ -975,18 +1045,17 @@ impl MfH264Encoder {
         };
         self.stats.frames_out += 1;
 
-        let summary = annexb::summarize(&data);
-        let keyframe = clean_point || summary.has_idr;
+        let codec = self.cfg.codec;
+        let info = bitstream::inspect(codec, &data);
+        let keyframe = clean_point || info.keyframe;
         let mut data = data;
-        if summary.has_sps && summary.has_pps {
-            self.parameter_sets = annexb::extract_parameter_sets(&data);
+        if info.has_parameter_sets {
+            self.parameter_sets = bitstream::parameter_sets(codec, &data);
         } else if keyframe
             && self.cfg.ensure_parameter_sets_on_idr
             && !self.parameter_sets.is_empty()
         {
-            let mut v = self.parameter_sets.clone();
-            v.extend_from_slice(&data);
-            data = v;
+            data = bitstream::prepend_parameter_sets(codec, &self.parameter_sets, &data);
             self.stats.parameter_sets_prepended += 1;
         }
         Ok(Some(EncodedUnit {

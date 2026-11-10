@@ -5,7 +5,7 @@
 
 use crate::SenderConfig;
 use anyhow::{bail, Context, Result};
-use cs_core::{Codec, Mode, Roles, StreamMode};
+use cs_core::{Mode, Roles, StreamMode};
 use cs_protocol::control::{ByeReason, ControlMessage, Hello, SinkCapabilities, StartStream};
 use cs_protocol::{ALPN, PROTOCOL_VERSION};
 use cs_security::verifier::PeerPolicy;
@@ -76,18 +76,19 @@ async fn handshake_reconnect(
             other => tracing::debug!(?other, "mensaje ignorado antes de SinkCapabilities"),
         }
     };
-    if !sink.decoders.iter().any(|d| d.codec == Codec::H264) {
+    let codec = cfg.negotiated_codec;
+    if !sink.decoders.iter().any(|d| d.codec == codec) {
         let _ = ctl
             .send(&ControlMessage::Bye {
                 reason: ByeReason::Error,
             })
             .await;
-        bail!("el receptor no anuncia decodificador H.264");
+        bail!("el receptor ya no anuncia decodificador {codec:?}");
     }
     ctl.send(&ControlMessage::StartStream(StartStream {
         stream_id: STREAM_ID,
         mode: stream_mode,
-        codec: Codec::H264,
+        codec,
         display_mode,
         bitrate_kbps: cfg.bitrate_kbps,
     }))
@@ -189,6 +190,7 @@ pub(crate) async fn try_reconnect(
 mod tests {
     use super::*;
     use crate::ReconnectConfig;
+    use cs_core::Codec;
     use cs_core::CodecSupport;
     use cs_security::identity::Identity;
     use cs_transport::Endpoint;

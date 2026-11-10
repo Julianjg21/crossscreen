@@ -94,6 +94,10 @@ pub struct StreamArgs {
     /// puerto). El portapapeles y el audio viajan solo con el primero.
     #[arg(long, default_value_t = 1)]
     pub monitors: u8,
+    /// Códec de vídeo: `h264` (por defecto), `auto` (el mejor que soporten
+    /// los dos equipos), `hevc` o `av1`. Si no se puede, se usa H.264.
+    #[arg(long, default_value = "h264")]
+    pub codec: cs_pipeline::codec::CodecChoice,
     /// Transferencia de archivos con el receptor (desactivada por defecto):
     /// los que lleguen se guardan en Descargas/CrossScreen.
     #[arg(long)]
@@ -150,6 +154,7 @@ pub async fn run(identity: &Identity, name: &str, peer: Fingerprint, a: StreamAr
     cfg.accept_input = a.allow_remote_input && !a.no_remote_input;
     cfg.clipboard = a.clipboard;
     cfg.audio = a.audio;
+    cfg.codec = a.codec;
     let mut files_tx = None;
     if a.files || !a.send_files.is_empty() {
         let inbox = cs_files::inbox_dir().context("no se encontró la carpeta de Descargas")?;

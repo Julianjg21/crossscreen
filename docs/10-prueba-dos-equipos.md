@@ -127,6 +127,17 @@ Hacen falta las dos casillas.
 - **Límites:** hasta 16 GiB por archivo, sin carpetas (comprímelas antes). La velocidad se limita a ~6 MB/s para no cortar la imagen.
 - **Wayland:** en Linux con Wayland aún no se pueden soltar archivos sobre el visor; sí se reciben.
 
+## Códec de vídeo (opcional)
+
+Por defecto se usa **H.264**, que funciona en todas las combinaciones. En «Transmitir» (emisor Windows) puedes elegir:
+- **Automático:** el más eficiente que tengan los dos equipos (AV1, luego HEVC, luego H.264).
+- **HEVC** o **AV1:** dan la misma calidad con menos ancho de banda, útil en Wi-Fi.
+
+Solo se usa un códec si el emisor lo codifica por hardware y el receptor lo decodifica. Si no, se usa H.264 y el panel o la consola dicen por qué.
+- **Receptor Windows:** necesita las extensiones de la Microsoft Store «Extensiones de vídeo HEVC» y «Extensión de vídeo AV1»; muchos equipos las traen.
+- **Receptor Linux:** recibe siempre H.264.
+- **Línea de comandos:** `crossscreen stream … --codec auto|hevc|av1`.
+
 ## Audio (opcional)
 
 Por defecto solo se transmite la imagen. Para oír en el receptor lo que suena en el emisor:

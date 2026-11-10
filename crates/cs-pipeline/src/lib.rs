@@ -12,6 +12,7 @@
 //! Diseño y medidas: `docs/poc-results/mvp-f2-emisor.md`.
 
 pub mod audio;
+pub mod codec;
 pub mod cursor;
 pub mod display_guard;
 mod files;
@@ -96,6 +97,11 @@ pub struct SenderConfig {
     /// Enviar el audio del sistema si el receptor lo pide (ADR-0008).
     /// Desactivado por defecto: por defecto solo se transmite la imagen.
     pub audio: bool,
+    /// Códec pedido (ADR-0012). Por defecto H.264.
+    pub codec: codec::CodecChoice,
+    /// Códec acordado con el receptor (lo fija la sesión; lo usan el hilo de
+    /// codificación y la reconexión).
+    pub negotiated_codec: cs_core::Codec,
     /// Transferencia de archivos con el receptor (ADR-0010): cola de salida
     /// y carpeta de recibidos. `None` (por defecto): desactivada.
     pub files: Option<cs_files::FilesHandle>,
@@ -130,6 +136,8 @@ impl SenderConfig {
             clipboard: false,
             audio: false,
             files: None,
+            codec: codec::CodecChoice::H264,
+            negotiated_codec: cs_core::Codec::H264,
             sim_loss: None,
         }
     }

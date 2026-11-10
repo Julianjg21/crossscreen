@@ -31,6 +31,35 @@ pub fn create_video_context() -> Result<VideoContext> {
     cs_decode::create_decoder_context().context("preparando el decodificador OpenH264")
 }
 
+/// Códecs que este visor decodifica (ADR-0012). En Windows se prueba a
+/// crear cada decodificador con D3D11 (HEVC y AV1 dependen de las
+/// extensiones de vídeo instaladas); en Linux, OpenH264: solo H.264.
+///
+/// Se sondea en un hilo aparte: Media Foundation inicializa COM en modo
+/// multihilo, y en el hilo de la ventana eso impediría a winit inicializar
+/// OLE (arrastrar y soltar), que exige un apartamento de un solo hilo.
+#[cfg(windows)]
+pub fn decoder_codecs() -> Vec<cs_core::Codec> {
+    let probe = std::thread::Builder::new()
+        .name("crossscreen-codec-probe".into())
+        .spawn(|| match cs_decode::create_d3d11_device() {
+            Ok(device) => cs_decode::supported_codecs(&device),
+            Err(e) => {
+                tracing::warn!("sin dispositivo D3D11 para sondear códecs: {e}");
+                vec![cs_core::Codec::H264]
+            }
+        });
+    probe
+        .ok()
+        .and_then(|h| h.join().ok())
+        .unwrap_or_else(|| vec![cs_core::Codec::H264])
+}
+
+#[cfg(not(windows))]
+pub fn decoder_codecs() -> Vec<cs_core::Codec> {
+    vec![cs_core::Codec::H264]
+}
+
 /// Crea el renderizador sobre la ventana de la sesión.
 #[cfg(windows)]
 pub fn create_renderer(
