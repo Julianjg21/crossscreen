@@ -68,8 +68,8 @@ En Linux "crear un monitor" depende de **quién controla KMS**. En Wayland es el
 | Entorno | Backend | Mecanismo | Privilegios | Monitor real | Captura asociada | Prioridad |
 |---|---|---|---|---|---|---|
 | **GNOME (Mutter) Wayland** | `mutter-virtual` | D-Bus `org.gnome.Mutter.ScreenCast` → `CreateSession` → `RecordVirtual` | Ninguno (sesión del usuario) | ✅ Monitor lógico del compositor mientras viva el *stream* | PipeWire (DMA-BUF) del mismo *stream* | **F4: primero** |
-| **KDE Plasma 6 Wayland** | `kwin-virtual` | Protocolo Wayland `zkde_screencast_unstable_v1` → `stream_virtual_output` (o el portal con tipo de fuente `VIRTUAL`) | Ninguno (KWin puede pedir autorización) | ✅ | PipeWire | F4 |
-| **Sway / wlroots** | `wlroots-headless` | `swaymsg create_output` (salida *headless*); Hyprland: `hyprctl output create headless` | Ninguno | ✅ | `xdg-desktop-portal-wlr` / `ext-image-copy-capture-v1` → PipeWire | F4 |
+| **KDE Plasma 6 Wayland** | `kwin-virtual` | **Implementado (ADR-0011):** portal ScreenCast con fuente `VIRTUAL` (1920×1080 fijo en KDE). Alternativa futura: `zkde_screencast_unstable_v1` → `stream_virtual_output` | Ninguno (diálogo del portal) | ✅ | PipeWire | F4 |
+| **Sway / wlroots** | `wlroots-headless` | **Implementado en Sway (ADR-0011):** `swaymsg create_output` + modo a medida; Hyprland: `hyprctl output create headless` (pendiente) | Ninguno | ✅ | `wlr-screencopy-unstable-v1` directo (sin portal) | F4 |
 | **Cualquier entorno (X11 o Wayland con soporte multi-GPU)** | `evdi` | Módulo del kernel **EVDI** (DisplayLink): crea un **conector DRM** de verdad, que el compositor o el servidor X ve como un monitor físico conectado | Cargar el módulo y abrir `/dev/dri/cardN` (regla udev) | ✅ A nivel del kernel | `libevdi` (`evdi_grab_pixels`, CPU) | F4b: *fallback* universal |
 | **X11 con driver modesetting/intel** | `xrandr-virtual` | Salidas `VIRTUAL1` del driver intel o conector desconectado forzado | Variable; a veces root | ⚠️ Depende del driver | XShm / XDamage | Solo si EVDI no es viable |
 | Pruebas / CI | `vkms` | Driver virtual KMS del kernel | root | Solo para pruebas | — | CI, no producción |

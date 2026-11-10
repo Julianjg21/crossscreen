@@ -183,8 +183,23 @@ impl PortalCaptureSession {
     /// Si el usuario cancela el diálogo devuelve
     /// `ashpd::Error::Response(ResponseError::Cancelled)`.
     pub async fn open(with_input: bool) -> Result<Self, ashpd::Error> {
+        Self::open_source(with_input, false).await
+    }
+
+    /// Como [`open`](Self::open), pero con `virtual_monitor` pide al
+    /// compositor un **monitor virtual nuevo** (fuente `VIRTUAL` del portal):
+    /// lo que ofrece KDE Plasma para extender el escritorio (ADR-0011).
+    pub async fn open_source(
+        with_input: bool,
+        virtual_monitor: bool,
+    ) -> Result<Self, ashpd::Error> {
+        let source = if virtual_monitor {
+            SourceType::Virtual
+        } else {
+            SourceType::Monitor
+        };
         if with_input {
-            match Self::open_remote().await {
+            match Self::open_remote(source).await {
                 Ok(s) => return Ok(s),
                 Err(e) if is_user_refusal(&e) => return Err(e),
                 Err(e) => tracing::warn!(
@@ -192,10 +207,10 @@ impl PortalCaptureSession {
                 ),
             }
         }
-        Self::open_screen_only().await
+        Self::open_screen_only(source).await
     }
 
-    async fn open_remote() -> Result<Self, ashpd::Error> {
+    async fn open_remote(source: SourceType) -> Result<Self, ashpd::Error> {
         let rd: RemoteDesktop<'static> = RemoteDesktop::new().await?;
         let sc: Screencast<'static> = Screencast::new().await?;
         let session = rd.create_session().await?;
@@ -211,7 +226,7 @@ impl PortalCaptureSession {
             sc.select_sources(
                 &session,
                 cursor_mode(&sc).await,
-                SourceType::Monitor.into(),
+                source.into(),
                 false,
                 None,
                 PersistMode::DoNot,
@@ -251,7 +266,7 @@ impl PortalCaptureSession {
         }
     }
 
-    async fn open_screen_only() -> Result<Self, ashpd::Error> {
+    async fn open_screen_only(source: SourceType) -> Result<Self, ashpd::Error> {
         let proxy: Screencast<'static> = Screencast::new().await?;
         let session = proxy.create_session().await?;
         let result = async {
@@ -259,7 +274,7 @@ impl PortalCaptureSession {
                 .select_sources(
                     &session,
                     cursor_mode(&proxy).await,
-                    SourceType::Monitor.into(),
+                    source.into(),
                     false,
                     None,
                     PersistMode::DoNot,
@@ -288,6 +303,19 @@ impl PortalCaptureSession {
                 Err(e)
             }
         }
+    }
+}
+
+/// ¿El portal puede crear un monitor virtual (fuente `VIRTUAL`)? Lo ofrecen
+/// KDE Plasma 5.27+ y otros escritorios (ADR-0011).
+pub async fn supports_virtual_monitor() -> bool {
+    match Screencast::new().await {
+        Ok(sc) => sc
+            .available_source_types()
+            .await
+            .map(|t| t.contains(SourceType::Virtual))
+            .unwrap_or(false),
+        Err(_) => false,
     }
 }
 

@@ -25,6 +25,10 @@ pub mod linux_mutter;
 pub mod linux_pipewire;
 #[cfg(not(windows))]
 pub mod linux_portal;
+#[cfg(not(windows))]
+pub mod linux_sway;
+#[cfg(all(not(windows), feature = "linux-pipewire"))]
+pub mod linux_wlr;
 #[cfg(windows)]
 pub mod windows_dxgi;
 

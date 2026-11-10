@@ -10,13 +10,15 @@ Tu PC con Windows (PC-A) **extiende su escritorio** y el equipo Linux (PC-B) lo 
 | Cursor de la fuente dibujado encima del vídeo | ✅ (aparece cuando llega su primera forma) |
 | Decodificación por hardware (VAAPI) | ❌ pendiente: por ahora decodifica la CPU |
 | Portapapeles de texto en Linux (ambos sentidos) | ✅ opcional (casilla del panel o `--clipboard`); X11/XWayland |
-| Linux como fuente: extender (monitor virtual de GNOME) y duplicar | ✅ GNOME en Wayland |
+| Linux como fuente: extender (monitor virtual) y duplicar | ✅ GNOME en Wayland · ✅ Sway (sin control remoto todavía) · ⚠️ KDE Plasma: implementado, pendiente de probar en un Plasma real |
 | Ratón y teclado de Windows controlando Ubuntu (Linux como fuente) | ✅ extender: sin diálogo; duplicar: se pide en el mismo diálogo de compartir pantalla |
 
 ## Linux como fuente: Ubuntu → Windows (experimental)
 
 Dos modos:
-- **Extender** (por defecto): GNOME crea un **monitor virtual** con la resolución de la pantalla de Windows y Windows lo muestra. Sin diálogo. Necesita GNOME en **Wayland** (lo normal en Ubuntu 22.04/24.04; en la pantalla de inicio de sesión no elijas «Ubuntu en Xorg»). El monitor aparece en *Configuración → Pantallas*, donde puedes colocarlo a la izquierda o a la derecha; al terminar desaparece solo.
+- **Extender en KDE Plasma (5.27 o posterior):** aparece el diálogo de compartir pantalla de KDE; elige el **monitor virtual nuevo**. KDE lo crea siempre a 1920×1080 (el visor lo escala). El control remoto se pide en el mismo diálogo.
+- **Extender en Sway:** sin diálogo. Se crea una salida virtual con la resolución del receptor, a la derecha de tus pantallas (muévela con `swaymsg output … pos`), y desaparece al terminar. Todavía no admite control remoto: solo imagen.
+- **Extender** (por defecto) **en GNOME**: GNOME crea un **monitor virtual** con la resolución de la pantalla de Windows y Windows lo muestra. Sin diálogo. Necesita GNOME en **Wayland** (lo normal en Ubuntu 22.04/24.04; en la pantalla de inicio de sesión no elijas «Ubuntu en Xorg»). El monitor aparece en *Configuración → Pantallas*, donde puedes colocarlo a la izquierda o a la derecha; al terminar desaparece solo.
 - **Duplicar**: Windows muestra la pantalla que elijas en el diálogo de GNOME.
 
 Requisitos: los dos equipos emparejados y OpenH264 instalado en Ubuntu (`./fetch-openh264.sh`, ver paso 3; con el `.deb` está en `/usr/lib/CrossScreen/fetch-openh264.sh`).

@@ -939,7 +939,7 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crossscreen-agent"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-cli"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "bytes",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-desktop"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-files",
  "cs-ipc",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-helper"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -1015,7 +1015,7 @@ dependencies = [
 
 [[package]]
 name = "crossscreen-viewer"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "cs-audio"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "opus1",
  "pipewire",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "cs-capture"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "ashpd",
  "futures-util",
@@ -1077,16 +1077,20 @@ dependencies = [
  "libspa-sys",
  "pipewire",
  "pipewire-sys",
+ "rustix 1.1.6",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "wayland-client",
+ "wayland-protocols-wlr",
  "windows 0.58.0",
  "zbus",
 ]
 
 [[package]]
 name = "cs-clipboard"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "arboard",
  "cs-protocol",
@@ -1099,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "cs-core"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "hex",
  "postcard",
@@ -1110,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "cs-decode"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "openh264",
@@ -1121,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "cs-discovery"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-core",
  "mdns-sd",
@@ -1132,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "cs-display"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-core",
  "thiserror 2.0.21",
@@ -1142,7 +1146,7 @@ dependencies = [
 
 [[package]]
 name = "cs-encode"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "bzip2-rs",
@@ -1156,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "cs-files"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-protocol",
  "cs-security",
@@ -1168,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "cs-input"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-core",
  "cs-protocol",
@@ -1179,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "cs-ipc"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -1191,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "cs-log"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -1199,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "cs-pipeline"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1223,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "cs-protocol"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-core",
  "postcard",
@@ -1234,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "cs-render"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "pollster",
  "thiserror 2.0.21",
@@ -1245,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "cs-security"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "cs-core",
  "hex",
@@ -1266,14 +1270,14 @@ dependencies = [
 
 [[package]]
 name = "cs-session"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "cs-transport"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "bytes",
  "cs-core",

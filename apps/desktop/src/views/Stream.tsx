@@ -491,7 +491,7 @@ export default function Stream({
               >
                 <option value="extend">
                   {status.platform === "linux"
-                    ? "Extender escritorio (monitor virtual de GNOME)"
+                    ? "Extender escritorio (monitor virtual: GNOME, KDE Plasma o Sway)"
                     : "Extender escritorio (monitor virtual)"}
                 </option>
                 <option value="duplicate">

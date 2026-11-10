@@ -23,6 +23,7 @@ use cs_capture::linux_input::InputAction;
 use cs_capture::linux_mutter::MutterVirtual;
 use cs_capture::linux_pipewire::I420Buffer;
 use cs_capture::linux_portal::{describe_error, PortalCaptureSession, PortalSession};
+use cs_capture::linux_sway::SwayVirtualOutput;
 use cs_core::{Codec, Mode, Roles, StreamMode};
 use cs_encode::openh264_backend::{I420Frame, OpenH264Encoder};
 use cs_encode::{EncodeControl, EncoderConfig, VideoEncoder};
@@ -76,21 +77,53 @@ struct Shared {
 struct LinuxWorker {
     shared: Arc<Shared>,
     join: Option<std::thread::JoinHandle<WorkerStats>>,
-    capture_control: Option<cs_capture::linux_pipewire::PipeWireCaptureControl>,
+    /// Control de la captura (PipeWire o wlr-screencopy): al soltarlo se para.
+    capture_control: Option<CaptureControl>,
+}
+
+/// Control de la captura en marcha; al soltarlo se detiene su hilo.
+#[allow(dead_code)] // solo se usa por su `Drop`
+enum CaptureControl {
+    PipeWire(cs_capture::linux_pipewire::PipeWireCaptureControl),
+    Wlr(cs_capture::linux_wlr::WlrCaptureControl),
+}
+
+/// De dónde salen los frames.
+enum FrameSource {
+    /// Nodo PipeWire (portal, Mutter o nodo de prueba).
+    PipeWire {
+        node: u32,
+        fd: OwnedFd,
+        fixed_size: Option<(u32, u32)>,
+    },
+    /// Salida de un compositor wlroots por `wlr-screencopy` (Sway).
+    Wlr { output: String, fps: u32 },
 }
 
 impl LinuxWorker {
     fn start(
-        node_id: u32,
-        fd: OwnedFd,
-        fixed_size: Option<(u32, u32)>,
+        source: FrameSource,
         cfg: &SenderConfig,
         tx: tokio_mpsc::Sender<LinuxUnit>,
         size_tx: watch::Sender<Option<(u32, u32)>>,
     ) -> Result<Self> {
-        let capture = cs_capture::linux_pipewire::start_i420_sized(node_id, fd, fixed_size)
-            .context("iniciando el stream PipeWire")?;
-        let (frames, capture_control) = capture.into_parts();
+        let (frames, capture_control): (mpsc::Receiver<I420Buffer>, CaptureControl) = match source {
+            FrameSource::PipeWire {
+                node,
+                fd,
+                fixed_size,
+            } => {
+                let capture = cs_capture::linux_pipewire::start_i420_sized(node, fd, fixed_size)
+                    .context("iniciando el stream PipeWire")?;
+                let (frames, control) = capture.into_parts();
+                (frames, CaptureControl::PipeWire(control))
+            }
+            FrameSource::Wlr { output, fps } => {
+                let (frames, control) = cs_capture::linux_wlr::start_i420(&output, fps)
+                    .context("iniciando la captura wlr-screencopy")?;
+                (frames, CaptureControl::Wlr(control))
+            }
+        };
         let shared = Arc::new(Shared {
             streaming: AtomicBool::new(false),
             force_idr: AtomicBool::new(true),
@@ -130,8 +163,8 @@ impl LinuxWorker {
             None => WorkerStats::default(),
         };
         if let Some(control) = self.capture_control.take() {
-            // Detener PipeWire bloquea brevemente (join de su hilo).
-            let _ = tokio::task::spawn_blocking(move || control.stop()).await;
+            // Detener la captura bloquea brevemente (join de su hilo).
+            let _ = tokio::task::spawn_blocking(move || drop(control)).await;
         }
         result
     }
@@ -292,6 +325,8 @@ enum SystemSession {
     Portal(PortalSession),
     /// Extender: sesión de Mutter con el monitor virtual.
     Mutter(MutterVirtual),
+    /// Extender en Sway: salida virtual *headless* (ADR-0011).
+    Sway(SwayVirtualOutput),
 }
 
 impl SystemSession {
@@ -299,6 +334,9 @@ impl SystemSession {
         match self {
             SystemSession::Portal(p) => p.close().await,
             SystemSession::Mutter(m) => m.close().await,
+            SystemSession::Sway(o) => {
+                let _ = tokio::task::spawn_blocking(move || o.remove()).await;
+            }
         }
     }
 
@@ -306,6 +344,23 @@ impl SystemSession {
         match self {
             SystemSession::Portal(p) => p.wait_closed().await,
             SystemSession::Mutter(m) => m.wait_closed().await,
+            // Si el usuario retira la salida (p. ej. `swaymsg output … unplug`).
+            SystemSession::Sway(o) => {
+                let name = o.name().to_owned();
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let n = name.clone();
+                    let exists = tokio::task::spawn_blocking(move || {
+                        cs_capture::linux_sway::output_exists(&n)
+                    })
+                    .await
+                    .unwrap_or(true);
+                    if !exists {
+                        tracing::info!(output = %name, "la salida virtual de Sway se retiró");
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -314,6 +369,7 @@ impl SystemSession {
         match self {
             SystemSession::Portal(p) => p.can_inject(),
             SystemSession::Mutter(m) => m.can_inject(),
+            SystemSession::Sway(_) => false,
         }
     }
 
@@ -321,6 +377,7 @@ impl SystemSession {
         match self {
             SystemSession::Portal(p) => p.inject(action).await.map_err(|e| e.to_string()),
             SystemSession::Mutter(m) => m.inject(action).await.map_err(|e| e.to_string()),
+            SystemSession::Sway(_) => Err("control remoto aún no disponible en Sway".into()),
         }
     }
 }
@@ -394,7 +451,21 @@ struct Capture {
 pub(crate) struct Prepared {
     system: Option<SystemSession>,
     capture: Option<Capture>,
-    extend: bool,
+    /// Extender con un monitor que se crea en la sesión (GNOME o Sway), ya
+    /// con la resolución del receptor.
+    extend: Option<VirtualBackend>,
+    /// La captura ya preparada es de un monitor virtual (portal `VIRTUAL`,
+    /// KDE Plasma): la sesión es de extender aunque no haya que crearlo.
+    portal_virtual: bool,
+}
+
+/// Cómo se crea el monitor virtual al conocer la resolución del receptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VirtualBackend {
+    /// GNOME: API de Mutter (`RecordVirtual`).
+    Mutter,
+    /// Sway: `swaymsg create_output` + `wlr-screencopy`.
+    Sway,
 }
 
 impl Drop for Prepared {
@@ -458,15 +529,10 @@ fn test_source() -> Result<Option<(u32, OwnedFd)>> {
 }
 
 /// Arranca la captura de `node_id` y espera su primer frame.
-async fn start_capture(
-    node_id: u32,
-    fd: OwnedFd,
-    cfg: &SenderConfig,
-    fixed_size: Option<(u32, u32)>,
-) -> Result<Capture> {
+async fn start_capture(source: FrameSource, cfg: &SenderConfig) -> Result<Capture> {
     let (video_tx, video_rx) = tokio_mpsc::channel(4);
     let (size_tx, mut size_rx) = watch::channel(None);
-    let worker = LinuxWorker::start(node_id, fd, fixed_size, cfg, video_tx, size_tx)?;
+    let worker = LinuxWorker::start(source, cfg, video_tx, size_tx)?;
     let first = tokio::time::timeout(FIRST_FRAME_TIMEOUT, size_rx.wait_for(Option::is_some))
         .await
         .ok()
@@ -474,7 +540,7 @@ async fn start_capture(
     let Some((width, height)) = first else {
         let stats = worker.stop().await;
         bail!(
-            "PipeWire no entregó ningún frame en {} s (capturados: {}){}",
+            "la captura no entregó ningún frame en {} s (capturados: {}){}",
             FIRST_FRAME_TIMEOUT.as_secs(),
             stats.captured,
             stats.fatal.map(|f| format!("; {f}")).unwrap_or_default()
@@ -497,35 +563,78 @@ pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
     )?;
 
     if let Some((node, fd)) = test_source()? {
-        let capture = start_capture(node, fd, cfg, None).await?;
+        let capture = start_capture(
+            FrameSource::PipeWire {
+                node,
+                fd,
+                fixed_size: None,
+            },
+            cfg,
+        )
+        .await?;
         return Ok(Prepared {
             system: None,
             capture: Some(capture),
-            extend: false,
+            extend: None,
+            portal_virtual: false,
         });
     }
 
+    let mut portal_virtual = false;
     if cfg.mode == StreamMode::Extend {
-        if !MutterVirtual::is_available().await {
-            bail!("{}", cs_capture::linux_mutter::MutterError::NotAvailable);
+        // Monitor virtual, por orden de preferencia (ADR-0007, ADR-0011):
+        // GNOME y Sway lo crean con la resolución del receptor y sin
+        // diálogo; si no, el portal con fuente VIRTUAL (KDE Plasma).
+        if MutterVirtual::is_available().await {
+            return Ok(Prepared {
+                system: None,
+                capture: None,
+                extend: Some(VirtualBackend::Mutter),
+                portal_virtual: false,
+            });
         }
-        return Ok(Prepared {
-            system: None,
-            capture: None,
-            extend: true,
-        });
+        let sway = tokio::task::spawn_blocking(|| {
+            cs_capture::linux_sway::is_available() && cs_capture::linux_wlr::is_available()
+        })
+        .await
+        .unwrap_or(false);
+        if sway {
+            if cfg.accept_input {
+                tracing::warn!(
+                    "control remoto aún no disponible en Sway: solo se transmite la imagen"
+                );
+            }
+            return Ok(Prepared {
+                system: None,
+                capture: None,
+                extend: Some(VirtualBackend::Sway),
+                portal_virtual: false,
+            });
+        }
+        if !cs_capture::linux_portal::supports_virtual_monitor().await {
+            bail!(
+                "este escritorio no permite crear un monitor virtual. Extender funciona en GNOME, KDE Plasma (5.27 o posterior) y Sway; en los demás usa «duplicar»"
+            );
+        }
+        portal_virtual = true;
     }
 
-    tracing::info!("pidiendo la pantalla al XDG Desktop Portal (diálogo del sistema)");
-    let opened = tokio::time::timeout(PORTAL_TIMEOUT, PortalCaptureSession::open(cfg.accept_input))
-        .await
-        .map_err(|_| {
-            anyhow!(
-                "no se respondió al diálogo de compartir pantalla en {} s",
-                PORTAL_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| anyhow!("{}", describe_error(&e)))?;
+    tracing::info!(
+        virtual_monitor = portal_virtual,
+        "pidiendo la pantalla al XDG Desktop Portal (diálogo del sistema)"
+    );
+    let opened = tokio::time::timeout(
+        PORTAL_TIMEOUT,
+        PortalCaptureSession::open_source(cfg.accept_input, portal_virtual),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "no se respondió al diálogo de compartir pantalla en {} s",
+            PORTAL_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|e| anyhow!("{}", describe_error(&e)))?;
     let PortalCaptureSession {
         stream,
         pipewire_fd,
@@ -539,10 +648,21 @@ pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
     let mut prepared = Prepared {
         system: Some(SystemSession::Portal(session)),
         capture: None,
-        extend: false,
+        extend: None,
+        portal_virtual,
     };
     // Si falla, `prepared` se suelta y cierra la sesión del portal.
-    prepared.capture = Some(start_capture(stream.node_id, pipewire_fd, cfg, None).await?);
+    prepared.capture = Some(
+        start_capture(
+            FrameSource::PipeWire {
+                node: stream.node_id,
+                fd: pipewire_fd,
+                fixed_size: None,
+            },
+            cfg,
+        )
+        .await?,
+    );
     Ok(prepared)
 }
 
@@ -550,15 +670,50 @@ pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
 /// arranca su captura.
 async fn open_virtual_monitor(
     prepared: &mut Prepared,
+    backend: VirtualBackend,
     cfg: &SenderConfig,
     size: (u32, u32),
+    hz: u32,
 ) -> Result<()> {
-    tracing::info!("creando monitor virtual de GNOME {}x{}", size.0, size.1);
-    let mutter = MutterVirtual::open(cfg.accept_input).await?;
-    let node = mutter.node_id;
-    prepared.system = Some(SystemSession::Mutter(mutter));
-    let fd = local_pipewire()?;
-    prepared.capture = Some(start_capture(node, fd, cfg, Some(size)).await?);
+    match backend {
+        VirtualBackend::Mutter => {
+            tracing::info!("creando monitor virtual de GNOME {}x{}", size.0, size.1);
+            let mutter = MutterVirtual::open(cfg.accept_input).await?;
+            let node = mutter.node_id;
+            prepared.system = Some(SystemSession::Mutter(mutter));
+            let fd = local_pipewire()?;
+            prepared.capture = Some(
+                start_capture(
+                    FrameSource::PipeWire {
+                        node,
+                        fd,
+                        fixed_size: Some(size),
+                    },
+                    cfg,
+                )
+                .await?,
+            );
+        }
+        VirtualBackend::Sway => {
+            tracing::info!("creando salida virtual de Sway {}x{}@{hz}", size.0, size.1);
+            let output =
+                tokio::task::spawn_blocking(move || SwayVirtualOutput::create(size.0, size.1, hz))
+                    .await
+                    .context("creando la salida de Sway")??;
+            let name = output.name().to_owned();
+            prepared.system = Some(SystemSession::Sway(output));
+            prepared.capture = Some(
+                start_capture(
+                    FrameSource::Wlr {
+                        output: name,
+                        fps: hz,
+                    },
+                    cfg,
+                )
+                .await?,
+            );
+        }
+    }
     Ok(())
 }
 
@@ -642,11 +797,17 @@ async fn session(
     if !sink.decoders.iter().any(|d| d.codec == Codec::H264) {
         bail!("el receptor no anuncia decodificador H.264");
     }
-    let stream_mode = if prepared.extend {
+    let stream_mode = if let Some(backend) = prepared.extend {
         // Extender: el monitor virtual toma la resolución del receptor. El
         // visor espera StartStream 10 s; crear el monitor tarda ~1 s.
+        let hz = cfg
+            .requested_mode
+            .unwrap_or(sink.native_mode)
+            .refresh_mhz
+            .div_ceil(1000)
+            .clamp(30, 240);
         let opened = match virtual_size(cfg.requested_mode, sink.native_mode, cfg.fallback_mode) {
-            Some(size) => open_virtual_monitor(prepared, cfg, size).await,
+            Some(size) => open_virtual_monitor(prepared, backend, cfg, size, hz).await,
             None => Err(anyhow!(
                 "resolución no válida para el monitor virtual (receptor {}x{})",
                 sink.native_mode.width,
@@ -662,6 +823,8 @@ async fn session(
             ctl.finish();
             return Err(e);
         }
+        StreamMode::Extend
+    } else if prepared.portal_virtual {
         StreamMode::Extend
     } else {
         StreamMode::Duplicate
