@@ -22,7 +22,7 @@ pub mod pairing;
 pub mod reassembly;
 pub mod simloss;
 
-pub use endpoint::{Connection, Endpoint};
+pub use endpoint::{any_addr, Connection, Endpoint};
 pub use framed::FramedStream;
 pub use pacer::{PacedSendOptions, Pacer, PacerConfig, PacingMode, WaitStrategy};
 pub use packetizer::{Packetizer, PacketizerConfig};

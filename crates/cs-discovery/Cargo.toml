@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 cs-core.workspace = true
 mdns-sd.workspace = true
+if-addrs.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

@@ -57,7 +57,9 @@ enum Cmd {
     Forget { fingerprint_prefix: String },
     /// Muestra un PIN y espera a que otro equipo se empareje.
     PairListen {
-        #[arg(long, default_value = "0.0.0.0:0")]
+        /// Por defecto, IPv4 e IPv6 (doble pila; el cable directo solo tiene
+        /// IPv6 de enlace local). Vuelve a solo IPv4 si no hay IPv6.
+        #[arg(long, default_value = "[::]:0")]
         bind: SocketAddr,
         /// No anunciar por mDNS.
         #[arg(long)]

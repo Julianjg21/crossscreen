@@ -290,3 +290,45 @@ async fn video_frames_over_datagrams_with_fec() {
     }
     conn.close(b"done");
 }
+
+/// Un listener en `[::]` (doble pila) acepta a un par IPv4 y a uno IPv6: el
+/// agente escucha así para que el cable directo (solo IPv6 de enlace local)
+/// funcione sin perder IPv4.
+#[tokio::test]
+async fn dual_stack_listener_accepts_ipv4_and_ipv6_pairing() {
+    for client_addr in ["127.0.0.1", "::1"] {
+        let server_id = Identity::generate().unwrap();
+        let server = Endpoint::server(
+            cs_transport::any_addr(0),
+            server_id,
+            PeerPolicy::AnyForPairing,
+            cs_protocol::ALPN_PAIRING,
+        )
+        .unwrap();
+        let port = server.local_addr().unwrap().port();
+        let pin = Pin::generate();
+        let pin_r = pin.clone();
+        let responder = tokio::spawn(async move {
+            let mut lim = AttemptLimiter::default();
+            pair_as_responder(&server, &pin_r, "receptor", &mut lim).await
+        });
+        let target = SocketAddr::new(client_addr.parse().unwrap(), port);
+        let bind = SocketAddr::new(
+            if target.is_ipv6() {
+                "::".parse().unwrap()
+            } else {
+                "0.0.0.0".parse().unwrap()
+            },
+            0,
+        );
+        let client = Endpoint::client(bind, Identity::generate().unwrap()).unwrap();
+        let paired = tokio::time::timeout(
+            Duration::from_secs(10),
+            pair_as_initiator(&client, target, &pin, "fuente"),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("sin respuesta por {client_addr}"));
+        paired.unwrap_or_else(|e| panic!("emparejamiento por {client_addr}: {e}"));
+        responder.await.unwrap().unwrap();
+    }
+}

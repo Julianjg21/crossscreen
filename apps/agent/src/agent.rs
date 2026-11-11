@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use cs_core::Roles;
-use cs_discovery::{Announcement, DiscoveredPeer, Discovery, DiscoveryEvent};
+use cs_discovery::{addrs, Announcement, DiscoveredPeer, Discovery, DiscoveryEvent};
 use cs_ipc::{
     AgentStatus, DiscoveredDevice, DisplayInfo, ErrorCode, Event, FileTransferInfo, Handler,
     HandlerFuture, IdentityInfo, IpcError, LatencySummary, ModeInfo, PairingOutcome, PeerInfo,
@@ -459,9 +459,9 @@ impl Agent {
                 port: p.port,
             });
         }
-        let bind: SocketAddr = ([0, 0, 0, 0], 0).into();
+        // Doble pila: por cable directo (sin DHCP) solo hay IPv6 de enlace local.
         let endpoint = Endpoint::server(
-            bind,
+            cs_transport::any_addr(0),
             self.identity.clone(),
             PeerPolicy::AnyForPairing,
             ALPN_PAIRING,
@@ -536,22 +536,20 @@ impl Agent {
         })?;
         let pin = Pin::parse(pin)
             .map_err(|_| err(ErrorCode::BadRequest, "El PIN debe tener 6 dígitos"))?;
-        let bind: SocketAddr = if addr.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        }
-        .parse()
-        .map_err(failed)?;
-        let endpoint = Endpoint::client(bind, self.identity.clone()).map_err(failed)?;
+        let endpoint = Endpoint::client(addrs::unspecified_for(&addr), self.identity.clone())
+            .map_err(failed)?;
+        let name = self.name.clone();
         let res = tokio::time::timeout(
             PAIR_WITH_TIMEOUT,
-            pair_as_initiator(&endpoint, addr, &pin, &self.name),
+            first_reachable(addr, |candidate| {
+                let (endpoint, pin, name) = (endpoint.clone(), pin.clone(), name.clone());
+                async move { pair_as_initiator(&endpoint, candidate, &pin, &name).await }
+            }),
         )
         .await;
         endpoint.close();
         let peer = match res {
-            Ok(Ok(p)) => p,
+            Ok(Ok((_, p))) => p,
             Ok(Err(e)) => {
                 tracing::warn!(%addr, "emparejamiento fallido: {e}");
                 return Err(failed(format!("No se pudo emparejar: {e}")));
@@ -598,7 +596,11 @@ impl Agent {
             name: p.name,
             protocol_major: p.protocol_major,
             roles: p.roles.to_txt(),
-            addresses: p.addresses.iter().map(|a| a.to_string()).collect(),
+            // De la más a la menos prometedora: el panel usa la primera.
+            addresses: addrs::rank_addresses(&p.addresses, &addrs::local_addrs())
+                .iter()
+                .map(|a| a.to_string())
+                .collect(),
             session_port: p.session_port,
             pairing_port: p.pairing_port,
             paired,
@@ -826,12 +828,13 @@ impl Agent {
             let source = cs_pipeline::prepare_source(&cfg_i)
                 .await
                 .map_err(|e| label(failed(format!("No se pudo preparar la captura: {e:#}"))))?;
-            let (endpoint, conn) = connect_receiver(&self.identity, addr_i, &peer_record)
+            let (endpoint, conn, reached) = connect_receiver(&self.identity, addr_i, &peer_record)
                 .await
                 .map_err(label)?;
             cfg_i.reconnect = Some(cs_pipeline::ReconnectConfig {
                 endpoint: endpoint.clone(),
-                addr: addr_i,
+                // La dirección que funcionó (con su interfaz si es de enlace local).
+                addr: reached,
                 peer: peer_record.fingerprint,
                 grace: cs_pipeline::DEFAULT_RECONNECT_GRACE,
             });
@@ -1076,12 +1079,13 @@ impl Agent {
         // visor `i` va al monitor físico `i`. El portapapeles, el audio y los
         // archivos, que son del equipo y no de la pantalla, solo los lleva el
         // primero.
-        let listen_addr = format!("0.0.0.0:{port}");
+        // Doble pila (IPv4 + IPv6): por cable directo solo hay IPv6 de enlace local.
+        let listen_addr = cs_transport::any_addr(port).to_string();
         let mut children = Vec::with_capacity(usize::from(screens));
         for i in 0..screens {
             let mut cmd = tokio::process::Command::new(&viewer_path);
             cmd.arg("--listen")
-                .arg(format!("0.0.0.0:{}", port + u16::from(i)))
+                .arg(cs_transport::any_addr(port + u16::from(i)).to_string())
                 .arg("--data-dir")
                 .arg(&self.dir)
                 .arg("--no-announce")
@@ -1184,27 +1188,87 @@ impl Agent {
     }
 }
 
+/// Prueba `attempt` con cada dirección candidata para `addr` a la vez y se
+/// queda con la primera que funcione.
+///
+/// Solo hay más de una candidata con una IPv6 de enlace local sin interfaz
+/// (cable directo): una por cada interfaz de este equipo
+/// ([`addrs::connect_candidates`]). Por las interfaces equivocadas el
+/// intento no llega al otro equipo; si llegara por dos (las dos en la misma
+/// red), el emparejamiento y el visor atienden una conexión cada vez y la
+/// sobrante se cierra sin efecto. Devuelve también la dirección que funcionó
+/// (con su interfaz), para reconectar por el mismo camino.
+async fn first_reachable<T, F, Fut>(
+    addr: SocketAddr,
+    attempt: F,
+) -> Result<(SocketAddr, T), cs_transport::TransportError>
+where
+    T: Send + 'static,
+    F: Fn(SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = Result<T, cs_transport::TransportError>> + Send + 'static,
+{
+    use cs_transport::TransportError as E;
+    let candidates = addrs::connect_candidates(addr, &addrs::local_addrs());
+    if let [only] = candidates.as_slice() {
+        return attempt(*only).await.map(|v| (*only, v));
+    }
+    tracing::info!(
+        %addr,
+        ?candidates,
+        "IPv6 de enlace local sin interfaz: se prueba por cada interfaz"
+    );
+    let mut set = tokio::task::JoinSet::new();
+    for candidate in candidates {
+        let fut = attempt(candidate);
+        set.spawn(async move { (candidate, fut.await) });
+    }
+    // Errores de red (no llegó) frente a errores del otro equipo (llegó y
+    // contestó, p. ej. PIN incorrecto): estos explican mejor el fallo.
+    let reached_peer = |e: &E| !matches!(e, E::Io(_) | E::Connect(_) | E::Connection(_));
+    let mut best: Option<E> = None;
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((candidate, Ok(v))) => {
+                set.abort_all();
+                tracing::info!(%candidate, "conectado por enlace local");
+                return Ok((candidate, v));
+            }
+            Ok((candidate, Err(e))) => {
+                tracing::debug!(%candidate, "sin conexión por esta interfaz: {e}");
+                if best.as_ref().is_none_or(|b| !reached_peer(b)) {
+                    best = Some(e);
+                }
+            }
+            Err(e) => tracing::warn!("intento de conexión interrumpido: {e}"),
+        }
+    }
+    Err(best.unwrap_or(E::UnexpectedEof))
+}
+
 /// Conecta con un visor receptor (huella fijada) con tiempo máximo.
+/// Devuelve también la dirección por la que se llegó.
 async fn connect_receiver(
     identity: &Identity,
     addr: SocketAddr,
     peer: &PeerRecord,
-) -> Result<(Endpoint, cs_transport::Connection), IpcError> {
-    let bind: SocketAddr = if addr.is_ipv6() {
-        "[::]:0"
-    } else {
-        "0.0.0.0:0"
-    }
-    .parse()
-    .expect("literal válido");
-    let endpoint = Endpoint::client(bind, identity.clone()).map_err(failed)?;
+) -> Result<(Endpoint, cs_transport::Connection, SocketAddr), IpcError> {
+    let endpoint =
+        Endpoint::client(addrs::unspecified_for(&addr), identity.clone()).map_err(failed)?;
+    let fingerprint = peer.fingerprint;
     match tokio::time::timeout(
         STREAM_CONNECT_TIMEOUT,
-        endpoint.connect(addr, PeerPolicy::Exactly(peer.fingerprint), ALPN),
+        first_reachable(addr, |candidate| {
+            let endpoint = endpoint.clone();
+            async move {
+                endpoint
+                    .connect(candidate, PeerPolicy::Exactly(fingerprint), ALPN)
+                    .await
+            }
+        }),
     )
     .await
     {
-        Ok(Ok(c)) => Ok((endpoint, c)),
+        Ok(Ok((reached, c))) => Ok((endpoint, c, reached)),
         Ok(Err(e)) => {
             endpoint.close();
             Err(failed(format!(

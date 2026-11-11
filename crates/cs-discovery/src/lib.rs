@@ -5,6 +5,8 @@
 //! el diálogo de emparejamiento, el puerto del listener de emparejamiento.
 //! La autenticación se hace siempre con huellas fijadas (ver `cs-security`).
 
+pub mod addrs;
+
 use cs_core::{DeviceId, Roles};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;

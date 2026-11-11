@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  bestAddr,
   call,
   errorMessage,
   onAgentEvent,
@@ -41,11 +42,7 @@ const RES_PRESETS: [number, number][] = [
 const RATES = [30, 60, 75, 120, 144];
 
 function suggestedAddr(d: DiscoveredDevice): string | null {
-  const port = d.session_port > 0 ? d.session_port : DEFAULT_PORT;
-  const v4 = d.addresses.find((a) => !a.includes(":"));
-  if (v4) return `${v4}:${port}`;
-  const v6 = d.addresses[0];
-  return v6 ? `[${v6}]:${port}` : null;
+  return bestAddr(d, d.session_port > 0 ? d.session_port : DEFAULT_PORT);
 }
 
 function formatLatency(l: LatencySummary | null): string {

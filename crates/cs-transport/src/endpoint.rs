@@ -7,9 +7,14 @@ use cs_security::verifier::PeerPolicy;
 use cs_security::{tls, Fingerprint};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::CertificateDer;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Cola de datagramas salientes de QUIC. Holgada para que quepa un IDR
+/// grande con su FEC; el emisor no debe llenarla (ver
+/// [`Connection::datagram_backlog`]): lo que espera aquí es retraso.
+pub const DATAGRAM_SEND_BUFFER: usize = 8 * 1024 * 1024;
 
 /// Parámetros de transporte comunes a cliente y servidor.
 fn transport_config() -> Arc<quinn::TransportConfig> {
@@ -22,7 +27,8 @@ fn transport_config() -> Arc<quinn::TransportConfig> {
     ));
     // Buffers holgados para ráfagas de un IDR (~1-2 MB).
     t.datagram_receive_buffer_size(Some(8 * 1024 * 1024));
-    t.datagram_send_buffer_size(8 * 1024 * 1024);
+    t.datagram_send_buffer_size(DATAGRAM_SEND_BUFFER);
+
     Arc::new(t)
 }
 
@@ -31,15 +37,42 @@ fn transport_config() -> Arc<quinn::TransportConfig> {
 /// incluso en loopback (detectado por `tests/loopback.rs`).
 const SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
+/// Dirección para escuchar en todas las interfaces, IPv4 e IPv6 a la vez
+/// (doble pila). Hace falta IPv6 para el cable directo entre dos equipos sin
+/// DHCP: ahí solo hay direcciones IPv6 de enlace local (`fe80::/10`). Si el
+/// sistema no tiene IPv6, [`Endpoint::server`] y [`Endpoint::client`] vuelven
+/// solos a `0.0.0.0`.
+pub fn any_addr(port: u16) -> SocketAddr {
+    SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port)
+}
+
 fn make_endpoint(
+    bind: SocketAddr,
+    server: Option<quinn::ServerConfig>,
+) -> Result<quinn::Endpoint, TransportError> {
+    if bind.ip() != IpAddr::V6(Ipv6Addr::UNSPECIFIED) {
+        return make_endpoint_on(bind, server);
+    }
+    match make_endpoint_on(bind, server.clone()) {
+        Ok(endpoint) => Ok(endpoint),
+        Err(e) => {
+            // Sin IPv6 (desactivado en el kernel) o sin doble pila: solo IPv4.
+            let v4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), bind.port());
+            tracing::warn!("no se pudo escuchar en {bind} ({e}); se usa {v4}");
+            make_endpoint_on(v4, server)
+        }
+    }
+}
+
+fn make_endpoint_on(
     bind: SocketAddr,
     server: Option<quinn::ServerConfig>,
 ) -> Result<quinn::Endpoint, TransportError> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::for_address(bind), Type::DGRAM, Some(Protocol::UDP))?;
-    if bind.is_ipv6() {
-        // Doble pila cuando se liga a [::].
-        let _ = socket.set_only_v6(false);
+    if bind.ip() == IpAddr::V6(Ipv6Addr::UNSPECIFIED) {
+        // Doble pila: sin ella, `[::]` no aceptaría a los pares IPv4.
+        socket.set_only_v6(false)?;
     }
     for (what, res) in [
         (
@@ -183,6 +216,15 @@ impl Connection {
     /// admite datagramas).
     pub fn max_datagram_size(&self) -> Option<usize> {
         self.inner.max_datagram_size()
+    }
+
+    /// Bytes de datagramas entregados a QUIC que aún no han salido. QUIC
+    /// aplica control de congestión también a los datagramas: si la red se
+    /// atasca (p. ej. una racha mala de Wi-Fi), el vídeo se acumula aquí y
+    /// cada frame llega más tarde que el anterior. El emisor debe esperar a
+    /// que baje antes de codificar más.
+    pub fn datagram_backlog(&self) -> usize {
+        DATAGRAM_SEND_BUFFER.saturating_sub(self.inner.datagram_send_buffer_space())
     }
 
     pub fn send_datagram(&self, data: Bytes) -> Result<(), TransportError> {

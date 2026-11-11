@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  bestAddr,
   call,
   errorMessage,
   isPairedDevice,
@@ -18,18 +19,11 @@ interface Props {
 
 function pairingAddr(d: DiscoveredDevice): string | null {
   if (d.pairing_port === null) return null;
-  const v4 = d.addresses.find((a) => !a.includes(":"));
-  if (v4) return `${v4}:${d.pairing_port}`;
-  const v6 = d.addresses[0];
-  return v6 ? `[${v6}]:${d.pairing_port}` : null;
+  return bestAddr(d, d.pairing_port);
 }
 
 function streamAddr(d: DiscoveredDevice): string | null {
-  const port = d.session_port > 0 ? d.session_port : 47810;
-  const v4 = d.addresses.find((a) => !a.includes(":"));
-  if (v4) return `${v4}:${port}`;
-  const v6 = d.addresses[0];
-  return v6 ? `[${v6}]:${port}` : null;
+  return bestAddr(d, d.session_port > 0 ? d.session_port : 47810);
 }
 
 export default function Network({ status, onError, onPair, onStream }: Props) {

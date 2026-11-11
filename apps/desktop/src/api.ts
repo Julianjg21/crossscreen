@@ -55,6 +55,18 @@ export interface DiscoveredDevice {
   screens?: number;
 }
 
+/**
+ * `IP:puerto` con la mejor dirección de un equipo descubierto. El agente ya
+ * las ordena de la más a la menos prometedora (misma red primero, luego IPv6
+ * de enlace local para el cable directo, al final las de redes virtuales
+ * como Docker o WSL), así que se usa la primera.
+ */
+export function bestAddr(d: DiscoveredDevice, port: number): string | null {
+  const a = d.addresses[0];
+  if (!a) return null;
+  return a.includes(":") ? `[${a}]:${port}` : `${a}:${port}`;
+}
+
 export interface ModeInfo {
   width: number;
   height: number;

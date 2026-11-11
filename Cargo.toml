@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.13"
+version = "0.0.14"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -64,6 +64,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 quinn = { version = "0.11", default-features = false, features = ["rustls-ring", "runtime-tokio", "log"] }
 reed-solomon-simd = "3"
 mdns-sd = "0.13"
+if-addrs = { version = "0.13", features = ["link-local"] }
 proptest = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
