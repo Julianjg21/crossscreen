@@ -168,6 +168,7 @@ Los nombres son `<programa>-<fecha UTC>-<pid>.log` (p. ej. `viewer-20261109-0421
 |---|---|---|
 | `pair` o `stream` no conectan | Firewall de PC-B, o red marcada como "Pública" | Permitir la app en el aviso del firewall; marcar la red como **Privada** |
 | Conecta por cable pero no por Wi-Fi | El router aísla a los clientes Wi-Fi entre sí (*AP isolation*) | Desactivar el aislamiento o usar cable |
+| Por **cable directo** (sin router) se detecta el equipo y su PIN, pero no empareja ni transmite | Sin DHCP solo hay direcciones de enlace local (`fe80::…`, `169.254.x.x`) y Windows marca la red como «Red no identificada», con perfil **Público**, donde el firewall de CrossScreen no abre nada | Usar 0.0.14 o posterior en los dos equipos (escucha también en IPv6 y elige la interfaz del cable). En el Windows que recibe, abrir PowerShell como administrador y poner esa red como privada: `Set-NetConnectionProfile -InterfaceAlias "Ethernet" -NetworkCategory Private` (el nombre exacto sale en `Get-NetConnectionProfile`) |
 | "la sesión está bloqueada o no es la consola activa" en PC-A | La pantalla de PC-A está bloqueada | Desbloquear PC-A |
 | "no hay ningún monitor virtual disponible" | El driver no está instalado, o está en error (código 43) | Paso 1, o `crossscreen-helper vdd-restart` como administrador |
 | "ningún equipo emparejado coincide" | El prefijo `--peer` no corresponde | `crossscreen peers` y copiar el prefijo correcto |
