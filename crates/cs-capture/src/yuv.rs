@@ -91,9 +91,54 @@ pub fn packed_to_i420(
     Some(I420Planes { y, u, v })
 }
 
+/// ¿Contiene `src` `height` filas completas de `width` píxeles de 4 bytes
+/// con este `stride`?
+#[cfg_attr(windows, allow(dead_code))] // solo lo usa `yuv_pool` (Linux)
+pub(crate) fn packed_fits(src_len: usize, stride: usize, width: u32, height: u32) -> bool {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let Some(row_bytes) = w.checked_mul(4) else {
+        return false;
+    };
+    stride >= row_bytes
+        && stride
+            .checked_mul(h - 1)
+            .and_then(|n| n.checked_add(row_bytes))
+            .is_some_and(|need| need <= src_len)
+}
+
+/// Convierte las filas de croma desde `first_crow` que caben en `u`
+/// (`y` empieza en la fila de luma `2·first_crow`). Para repartir una
+/// conversión entre hilos propios (ver `yuv_pool`). `src` ya validado con
+/// [`packed_fits`].
+#[allow(clippy::too_many_arguments)] // los planos van separados para poder trocearlos
+#[cfg_attr(windows, allow(dead_code))] // solo lo usa `yuv_pool` (Linux)
+pub(crate) fn convert_rows(
+    src: &[u8],
+    stride: usize,
+    width: u32,
+    height: u32,
+    order: PackedRgb,
+    first_crow: usize,
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+) {
+    let job = Job {
+        src,
+        stride,
+        w: width as usize,
+        h: height as usize,
+        offsets: order.offsets(),
+    };
+    job.rows(first_crow, y, u, v);
+}
+
 /// Hilos para convertir `pixels` píxeles: uno en imágenes pequeñas y hasta
 /// 4 en grandes (deja núcleos libres para el codificador y PipeWire).
-fn conversion_threads(pixels: usize) -> usize {
+pub(crate) fn conversion_threads(pixels: usize) -> usize {
     if pixels < 640 * 480 {
         return 1;
     }
@@ -111,47 +156,127 @@ struct Job<'a> {
     offsets: (usize, usize, usize),
 }
 
+/// Luma BT.709 de rango limitado en punto fijo (×256).
+#[inline(always)]
+fn luma(r: i32, g: i32, b: i32) -> u8 {
+    (((47 * r + 157 * g + 16 * b + 128) >> 8) + 16) as u8
+}
+
+/// Croma (Cb, Cr) de la media `(r, g, b)` de un bloque.
+#[inline(always)]
+fn chroma(r: i32, g: i32, b: i32) -> (u8, u8) {
+    let cb = ((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128;
+    let cr = ((112 * r - 102 * g - 10 * b + 128) >> 8) + 128;
+    (cb.clamp(0, 255) as u8, cr.clamp(0, 255) as u8)
+}
+
+/// Camino rápido: bloques 2×2 completos de dos filas, con las posiciones de
+/// R, G y B fijas en compilación. Sin comprobaciones de límites por píxel
+/// (todo va por `chunks_exact`), lo que deja al compilador vectorizar.
+/// Mismo resultado, bit a bit, que el camino general.
+#[inline(always)]
+fn full_blocks<const RI: usize, const GI: usize, const BI: usize>(
+    row0: &[u8],
+    row1: &[u8],
+    y0: &mut [u8],
+    y1: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+) {
+    let pairs = row0
+        .chunks_exact(8)
+        .zip(row1.chunks_exact(8))
+        .zip(y0.chunks_exact_mut(2).zip(y1.chunks_exact_mut(2)))
+        .zip(u.iter_mut().zip(v.iter_mut()));
+    for (((p0, p1), (ya, yb)), (uo, vo)) in pairs {
+        let px = |p: &[u8], o: usize| {
+            (
+                i32::from(p[o + RI]),
+                i32::from(p[o + GI]),
+                i32::from(p[o + BI]),
+            )
+        };
+        let (a, b, c, d) = (px(p0, 0), px(p0, 4), px(p1, 0), px(p1, 4));
+        ya[0] = luma(a.0, a.1, a.2);
+        ya[1] = luma(b.0, b.1, b.2);
+        yb[0] = luma(c.0, c.1, c.2);
+        yb[1] = luma(d.0, d.1, d.2);
+        // Media de 4 valores no negativos: `/ 4` = `>> 2`.
+        let (cb, cr) = chroma(
+            (a.0 + b.0 + c.0 + d.0) >> 2,
+            (a.1 + b.1 + c.1 + d.1) >> 2,
+            (a.2 + b.2 + c.2 + d.2) >> 2,
+        );
+        *uo = cb;
+        *vo = cr;
+    }
+}
+
 impl Job<'_> {
     /// Convierte las filas de croma desde `first_crow` que caben en `u`; `y`
     /// empieza en la fila de luma `2·first_crow`.
     fn rows(&self, first_crow: usize, y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
         let (w, h) = (self.w, self.h);
         let cw = w.div_ceil(2);
-        let (ri, gi, bi) = self.offsets;
-        let px = |row: &[u8], col: usize| -> (i32, i32, i32) {
-            let p = &row[col * 4..col * 4 + 4];
-            (i32::from(p[ri]), i32::from(p[gi]), i32::from(p[bi]))
-        };
-        // Coeficientes BT.709 de rango limitado en punto fijo (×256).
-        let luma =
-            |(r, g, b): (i32, i32, i32)| (((47 * r + 157 * g + 16 * b + 128) >> 8) + 16) as u8;
+        let full = w / 2;
         for (k, (urow, vrow)) in u.chunks_mut(cw).zip(v.chunks_mut(cw)).enumerate() {
             let r0 = 2 * (first_crow + k);
             let rows: [Option<&[u8]>; 2] = [r0, r0 + 1]
                 .map(|r| (r < h).then(|| &self.src[r * self.stride..r * self.stride + w * 4]));
-            for (cc, (uo, vo)) in urow.iter_mut().zip(vrow.iter_mut()).enumerate() {
-                let (mut sr, mut sg, mut sb, mut n) = (0, 0, 0, 0);
-                for (dr, row) in rows.iter().enumerate() {
-                    let Some(row) = row else { continue };
-                    let (c0, c1) = (2 * cc, (2 * cc + 2).min(w));
-                    let yrow = &mut y[(2 * k + dr) * w + c0..(2 * k + dr) * w + c1];
-                    for (col, yo) in (c0..c1).zip(yrow.iter_mut()) {
-                        let p = px(row, col);
-                        *yo = luma(p);
-                        sr += p.0;
-                        sg += p.1;
-                        sb += p.2;
-                        n += 1;
-                    }
+            let mut first_slow = 0;
+            if let [Some(row0), Some(row1)] = rows {
+                let (top, bottom) = y[2 * k * w..].split_at_mut(w);
+                let (y0, y1) = (&mut top[..2 * full], &mut bottom[..2 * full]);
+                let (r0b, r1b) = (&row0[..8 * full], &row1[..8 * full]);
+                let (uf, vf) = (&mut urow[..full], &mut vrow[..full]);
+                match self.offsets {
+                    (2, 1, 0) => full_blocks::<2, 1, 0>(r0b, r1b, y0, y1, uf, vf),
+                    (0, 1, 2) => full_blocks::<0, 1, 2>(r0b, r1b, y0, y1, uf, vf),
+                    (1, 2, 3) => full_blocks::<1, 2, 3>(r0b, r1b, y0, y1, uf, vf),
+                    (3, 2, 1) => full_blocks::<3, 2, 1>(r0b, r1b, y0, y1, uf, vf),
+                    _ => unreachable!("órdenes de PackedRgb::offsets"),
                 }
-                // Media del bloque 2×2 (recortado en bordes impares).
-                let (r, g, b) = (sr / n, sg / n, sb / n);
-                let cb = ((-26 * r - 87 * g + 112 * b + 128) >> 8) + 128;
-                let cr = ((112 * r - 102 * g - 10 * b + 128) >> 8) + 128;
-                *uo = cb.clamp(0, 255) as u8;
-                *vo = cr.clamp(0, 255) as u8;
+                first_slow = full;
+            }
+            // Camino general: columna impar del borde o última fila sola.
+            for cc in first_slow..cw {
+                let (uo, vo) = (&mut urow[cc], &mut vrow[cc]);
+                self.block(&rows, k, cc, y, uo, vo);
             }
         }
+    }
+
+    /// Un bloque (recortado en los bordes impares) por el camino general.
+    fn block(
+        &self,
+        rows: &[Option<&[u8]>; 2],
+        k: usize,
+        cc: usize,
+        y: &mut [u8],
+        uo: &mut u8,
+        vo: &mut u8,
+    ) {
+        let w = self.w;
+        let (ri, gi, bi) = self.offsets;
+        let (mut sr, mut sg, mut sb, mut n) = (0, 0, 0, 0);
+        for (dr, row) in rows.iter().enumerate() {
+            let Some(row) = row else { continue };
+            let (c0, c1) = (2 * cc, (2 * cc + 2).min(w));
+            let yrow = &mut y[(2 * k + dr) * w + c0..(2 * k + dr) * w + c1];
+            for (col, yo) in (c0..c1).zip(yrow.iter_mut()) {
+                let p = &row[col * 4..col * 4 + 4];
+                let (r, g, b) = (i32::from(p[ri]), i32::from(p[gi]), i32::from(p[bi]));
+                *yo = luma(r, g, b);
+                sr += r;
+                sg += g;
+                sb += b;
+                n += 1;
+            }
+        }
+        // Media del bloque 2×2 (recortado en bordes impares).
+        let (cb, cr) = chroma(sr / n, sg / n, sb / n);
+        *uo = cb;
+        *vo = cr;
     }
 }
 

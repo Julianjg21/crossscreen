@@ -364,6 +364,7 @@ impl Capturer {
             u: p.u,
             v: p.v,
             strides: (wy, wc, wc),
+            captured: std::time::Instant::now(),
         }))
     }
 }

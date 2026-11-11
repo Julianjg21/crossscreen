@@ -49,7 +49,7 @@ serde_json = "1"
 # Captura de salidas wlroots (Sway) sin portal: wlr-screencopy (ADR-0011).
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
-rustix = { version = "1", features = ["event", "fs", "time"] }
+rustix = { version = "1", features = ["event", "fs", "thread", "time"] }
 pipewire = { version = "=0.7.2", optional = true }
 pipewire-sys = { package = "pipewire-sys", version = "=0.7.2", optional = true }
 libspa = { package = "libspa", version = "=0.7.2", optional = true }

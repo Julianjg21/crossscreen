@@ -16,6 +16,8 @@ pub mod bmp;
 pub mod cursor;
 pub mod stats;
 pub mod yuv;
+#[cfg(not(windows))]
+pub mod yuv_pool;
 
 #[cfg(not(windows))]
 pub mod linux_input;
@@ -25,6 +27,8 @@ pub mod linux_mutter;
 pub mod linux_pipewire;
 #[cfg(not(windows))]
 pub mod linux_portal;
+#[cfg(not(windows))]
+pub mod linux_priority;
 #[cfg(not(windows))]
 pub mod linux_sway;
 #[cfg(all(not(windows), feature = "linux-pipewire"))]
