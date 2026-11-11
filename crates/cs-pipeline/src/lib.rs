@@ -16,6 +16,7 @@ pub mod codec;
 pub mod cursor;
 pub mod display_guard;
 mod files;
+pub mod governor;
 pub mod multi;
 mod reconnect;
 pub mod stats;

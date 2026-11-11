@@ -73,6 +73,10 @@ struct Check {
     nal_hist: [u64; 32],
     sps: Option<String>,
     latency_us: Samples,
+    /// (llegada desde el inicio − pts) por frame, en µs: sin reloj común,
+    /// lo que crece respecto al mínimo es retraso acumulado por el camino.
+    arrival_minus_pts_us: Vec<i64>,
+    started: Option<Instant>,
     keyframe_response_ms: Samples,
     cursor_positions: u64,
     cursor_shapes: u64,
@@ -100,6 +104,9 @@ impl Check {
         if lat < 10_000_000 {
             self.latency_us.push(lat as f64);
         }
+        let started = *self.started.get_or_insert_with(Instant::now);
+        self.arrival_minus_pts_us
+            .push(started.elapsed().as_micros() as i64 - i64::from(f.pts_us));
         if self.frames == 0 && !f.keyframe {
             self.first_not_idr = true;
         }
@@ -374,6 +381,16 @@ async fn main() -> Result<()> {
         "Latencia captura→reensamblado (mismo QPC): {}",
         pct(&mut c.latency_us, 1e-3)
     );
+    if let Some(min) = c.arrival_minus_pts_us.iter().copied().min() {
+        let mut extra = Samples::default();
+        for v in &c.arrival_minus_pts_us {
+            extra.push((v - min) as f64);
+        }
+        println!(
+            "Retraso añadido por el camino (llegada − pts, sobre el mejor frame): {}",
+            pct(&mut extra, 1e-3)
+        );
+    }
     println!(
         "RequestKeyframe enviados {} · respuesta (petición→IDR recibido): {}",
         c.requests,

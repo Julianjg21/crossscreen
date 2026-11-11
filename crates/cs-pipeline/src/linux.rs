@@ -14,6 +14,7 @@
 //! captura/codificación, PipeWire y la sesión del portal (si no se cierra,
 //! GNOME mantiene el indicador de "compartiendo pantalla").
 
+use crate::governor::RateGovernor;
 use crate::stats::{ControlStats, SenderReport, WorkerStats};
 use crate::timing::wire_pts;
 use crate::{SenderConfig, STREAM_ID};
@@ -26,7 +27,8 @@ use cs_capture::linux_portal::{describe_error, PortalCaptureSession, PortalSessi
 use cs_capture::linux_sway::SwayVirtualOutput;
 use cs_core::{Codec, Mode, Roles, StreamMode};
 use cs_encode::openh264_backend::{I420Frame, OpenH264Encoder};
-use cs_encode::{EncodeControl, EncoderConfig, VideoEncoder};
+use cs_encode::vaapi::VaapiEncoder;
+use cs_encode::{EncodeControl, EncodedUnit, EncoderConfig, VideoEncoder};
 use cs_input::evdev;
 use cs_input::{ButtonState, InputEvent, PressedState};
 use cs_protocol::control::{ByeReason, ControlMessage, Hello, SinkCapabilities, StartStream};
@@ -62,6 +64,9 @@ struct LinuxUnit {
     data: Vec<u8>,
     keyframe: bool,
     pts_us: u64,
+    /// Llegada del frame desde la captura (`None` en repeticiones de una
+    /// pantalla quieta, que no miden latencia).
+    captured: Option<Instant>,
 }
 
 /// Estado compartido entre la sesión (async) y el hilo de codificación.
@@ -72,6 +77,68 @@ struct Shared {
     /// El próximo frame debe salir como IDR.
     force_idr: AtomicBool,
     stop: AtomicBool,
+    /// Conexión por la que sale el vídeo (mientras se transmite), para
+    /// mirar si su cola de envío está atascada.
+    link: std::sync::Mutex<Option<Connection>>,
+    /// Bytes que de verdad salen por la red (datagramas con FEC y
+    /// cabeceras), los cuenta la tarea de envío para el regulador de tasa.
+    wire_bytes: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Shared {
+    fn set_link(&self, conn: Option<Connection>) {
+        if let Ok(mut link) = self.link.lock() {
+            *link = conn;
+        }
+    }
+}
+
+/// Diagnóstico: `CROSSSCREEN_SEND_GATE=0` desactiva la espera ante la red
+/// atascada (para medir la diferencia; no usar en uso normal).
+fn send_gate_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("CROSSSCREEN_SEND_GATE").map_or(true, |v| v != "0"))
+}
+
+/// Retraso de red que se tolera en la cola de envío antes de dejar de
+/// codificar: lo que pase de aquí sería lag acumulado.
+const MAX_SEND_QUEUE_DELAY: Duration = Duration::from_millis(40);
+/// Mínimo absoluto de la cola tolerada (un IDR mediano cabe entero).
+const MIN_SEND_QUEUE_BYTES: usize = 96 * 1024;
+
+/// ¿Está la red atascada? Frames ya codificados esperando a la tarea de
+/// envío, o la cola de datagramas de QUIC por encima de ~40 ms de vídeo.
+///
+/// Mientras lo esté no se codifica: la captura sigue sustituyendo el frame
+/// pendiente por el más nuevo y, al despejarse, ese sale como P-frame
+/// normal (sin romper la cadena de referencias ni forzar un IDR). Si la red
+/// empeora, bajan los fps, pero lo que se ve no se queda atrás.
+///
+/// Además alimenta al regulador de tasa ([`RateGovernor`]) con el RTT y le
+/// pregunta si queda saldo: así no se manda más de lo que cabe por la red.
+fn network_busy(
+    shared: &Shared,
+    tx: &tokio_mpsc::Sender<LinuxUnit>,
+    max_backlog: usize,
+    governor: &mut RateGovernor,
+) -> bool {
+    if !send_gate_enabled() {
+        return false;
+    }
+    if tx.max_capacity() - tx.capacity() >= 2 {
+        return true;
+    }
+    let link = shared
+        .link
+        .lock()
+        .ok()
+        .and_then(|link| link.as_ref().map(|c| (c.datagram_backlog(), c.rtt())));
+    let Some((backlog, rtt)) = link else {
+        return false;
+    };
+    let now = Instant::now();
+    governor.on_rtt(now, rtt);
+    backlog > max_backlog || !governor.may_send(now)
 }
 
 struct LinuxWorker {
@@ -86,6 +153,138 @@ struct LinuxWorker {
 enum CaptureControl {
     PipeWire(cs_capture::linux_pipewire::PipeWireCaptureControl),
     Wlr(cs_capture::linux_wlr::WlrCaptureControl),
+}
+
+/// Frames de la captura, ya en I420.
+enum Frames {
+    /// PipeWire: ranura de un frame, siempre el más reciente.
+    PipeWire(cs_capture::linux_pipewire::LatestFrame),
+    /// wlr-screencopy (Sway): canal acotado.
+    Wlr(mpsc::Receiver<I420Buffer>),
+}
+
+impl Frames {
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<I420Buffer, RecvTimeoutError> {
+        match self {
+            Frames::PipeWire(f) => f.recv_timeout(timeout),
+            Frames::Wlr(rx) => rx.recv_timeout(timeout),
+        }
+    }
+
+    /// Frames capturados que no llegaron a codificarse porque llegó otro más
+    /// nuevo (solo se cuentan con PipeWire).
+    fn replaced(&self) -> u64 {
+        match self {
+            Frames::PipeWire(f) => f.replaced(),
+            Frames::Wlr(_) => 0,
+        }
+    }
+}
+
+/// Variable para elegir el codificador: `vaapi`, `openh264` o `auto` (por
+/// defecto: la GPU si puede, si no OpenH264).
+const ENCODER_ENV: &str = "CROSSSCREEN_ENCODER";
+
+/// Fallos seguidos de la GPU tras los que se pasa a OpenH264 hasta el final
+/// de la sesión.
+const MAX_HW_FAILURES: u32 = 3;
+
+/// Preferencia de codificador (ver [`ENCODER_ENV`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EncoderChoice {
+    Auto,
+    Vaapi,
+    OpenH264,
+}
+
+impl EncoderChoice {
+    fn from_env() -> Self {
+        match std::env::var(ENCODER_ENV)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "vaapi" | "gpu" | "hw" => Self::Vaapi,
+            "openh264" | "cpu" | "sw" | "software" => Self::OpenH264,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Codificador del emisor Linux: H.264 por GPU (VA-API) si se puede; si no,
+/// OpenH264 por CPU. Con el equipo cargado la diferencia es grande (medido
+/// en un i5-6200U a 1366×768 con la CPU saturada: OpenH264 p95 56 ms y
+/// máx. 242 ms por frame; VA-API p95 14 ms y máx. 29 ms, con 1,6 ms de CPU
+/// por frame frente a 10–12 ms).
+enum LinuxEncoder {
+    Vaapi(Box<VaapiEncoder>),
+    OpenH264(Box<OpenH264Encoder>),
+}
+
+impl LinuxEncoder {
+    fn create(config: &EncoderConfig, choice: EncoderChoice) -> Result<Self> {
+        if choice != EncoderChoice::OpenH264 {
+            match VaapiEncoder::new(config) {
+                Ok(enc) => return Ok(Self::Vaapi(Box::new(enc))),
+                Err(e) if choice == EncoderChoice::Vaapi => {
+                    return Err(anyhow!("codificación por GPU (VA-API) no disponible: {e}"))
+                }
+                Err(e) => tracing::info!("sin codificación por GPU (VA-API): {e}; se usa OpenH264"),
+            }
+        }
+        Ok(Self::OpenH264(Box::new(
+            OpenH264Encoder::from_default_path(config)?,
+        )))
+    }
+
+    fn encode(
+        &mut self,
+        frame: &I420Frame,
+        ctl: EncodeControl,
+    ) -> cs_encode::Result<Vec<EncodedUnit>> {
+        match self {
+            Self::Vaapi(e) => e.encode(frame, ctl),
+            Self::OpenH264(e) => e.encode(frame, ctl),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Vaapi(e) => format!("GPU, {}", e.caps().info.friendly_name),
+            Self::OpenH264(e) => format!("CPU, {}", e.caps().info.friendly_name),
+        }
+    }
+
+    fn is_hardware(&self) -> bool {
+        matches!(self, Self::Vaapi(_))
+    }
+
+    /// Tasa objetivo nueva (solo la GPU la usa; con OpenH264 la regula el
+    /// cubo de fichas bajando los fps).
+    fn set_bitrate_kbps(&mut self, kbps: u32) {
+        if let Self::Vaapi(e) = self {
+            e.set_bitrate_kbps(kbps);
+        }
+    }
+}
+
+/// ¿Puede el emisor codificar? GPU (VA-API) u OpenH264; describe el que se
+/// usará o explica por qué ninguno.
+fn check_encoder() -> Result<String> {
+    let choice = EncoderChoice::from_env();
+    if choice != EncoderChoice::OpenH264 {
+        match cs_encode::vaapi::probe() {
+            Ok(gpu) => return Ok(format!("GPU (VA-API): {gpu}")),
+            Err(e) if choice == EncoderChoice::Vaapi => {
+                bail!("codificación por GPU (VA-API) no disponible: {e}")
+            }
+            Err(e) => tracing::info!("sin codificación por GPU (VA-API): {e}"),
+        }
+    }
+    OpenH264Encoder::from_default_path(&EncoderConfig::desktop(640, 480, 60, 1000)).map_err(
+        |e| anyhow!("{e} (con el .deb el script está en /usr/lib/CrossScreen/fetch-openh264.sh)"),
+    )?;
+    Ok("CPU (OpenH264)".into())
 }
 
 /// De dónde salen los frames.
@@ -107,7 +306,7 @@ impl LinuxWorker {
         tx: tokio_mpsc::Sender<LinuxUnit>,
         size_tx: watch::Sender<Option<(u32, u32)>>,
     ) -> Result<Self> {
-        let (frames, capture_control): (mpsc::Receiver<I420Buffer>, CaptureControl) = match source {
+        let (frames, capture_control): (Frames, CaptureControl) = match source {
             FrameSource::PipeWire {
                 node,
                 fd,
@@ -116,18 +315,20 @@ impl LinuxWorker {
                 let capture = cs_capture::linux_pipewire::start_i420_sized(node, fd, fixed_size)
                     .context("iniciando el stream PipeWire")?;
                 let (frames, control) = capture.into_parts();
-                (frames, CaptureControl::PipeWire(control))
+                (Frames::PipeWire(frames), CaptureControl::PipeWire(control))
             }
             FrameSource::Wlr { output, fps } => {
                 let (frames, control) = cs_capture::linux_wlr::start_i420(&output, fps)
                     .context("iniciando la captura wlr-screencopy")?;
-                (frames, CaptureControl::Wlr(control))
+                (Frames::Wlr(frames), CaptureControl::Wlr(control))
             }
         };
         let shared = Arc::new(Shared {
             streaming: AtomicBool::new(false),
             force_idr: AtomicBool::new(true),
             stop: AtomicBool::new(false),
+            link: std::sync::Mutex::new(None),
+            wire_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         });
         let thread_shared = Arc::clone(&shared);
         let bitrate = cfg.bitrate_kbps;
@@ -174,21 +375,68 @@ impl LinuxWorker {
 /// codifica con OpenH264 cuando la sesión ya transmite y repite el último
 /// frame si la pantalla está quieta.
 fn encode_loop(
-    frames: mpsc::Receiver<I420Buffer>,
+    frames: Frames,
     shared: Arc<Shared>,
     bitrate_kbps: u32,
     tx: tokio_mpsc::Sender<LinuxUnit>,
     size_tx: watch::Sender<Option<(u32, u32)>>,
 ) -> WorkerStats {
+    // OpenH264 y la conversión a I420 van por CPU: con el equipo cargado,
+    // sin prioridad alta este hilo se queda sin turno y la pantalla se
+    // retrasa o se congela. Los hilos de conversión piden la suya (no se
+    // hereda: ver `linux_priority`).
+    cs_capture::linux_priority::raise_current_thread_logged("codificación");
+    let mut frames = frames;
+    let stats = encode_frames(&mut frames, &shared, bitrate_kbps, &tx, &size_tx);
+    let replaced = frames.replaced();
+    if replaced > 0 {
+        tracing::info!(
+            "frames sustituidos por uno más nuevo antes de codificar: {replaced} \
+             (el codificador no daba abasto; se envió siempre el más reciente)"
+        );
+    }
+    stats
+}
+
+fn encode_frames(
+    frames: &mut Frames,
+    shared: &Shared,
+    bitrate_kbps: u32,
+    tx: &tokio_mpsc::Sender<LinuxUnit>,
+    size_tx: &watch::Sender<Option<(u32, u32)>>,
+) -> WorkerStats {
     let mut stats = WorkerStats::default();
-    let mut encoder: Option<(OpenH264Encoder, (u32, u32))> = None;
+    let mut encoder: Option<(LinuxEncoder, (u32, u32))> = None;
+    let mut choice = EncoderChoice::from_env();
+    let mut hw_failures = 0u32;
     let mut last_frame: Option<I420Frame> = None;
     let mut last_encode = Instant::now();
     let mut epoch: Option<Instant> = None;
+    // Frame retenido porque la red estaba atascada (ver `network_busy`).
+    let mut held: Option<(I420Frame, Option<Instant>)> = None;
+    let mut held_since: Option<Instant> = None;
+    let (mut held_episodes, mut held_longest) = (0u64, Duration::ZERO);
+    let mut governor = RateGovernor::new(bitrate_kbps, Instant::now());
+    let mut wire_seen = shared.wire_bytes.load(Ordering::Relaxed);
+    let mut applied_kbps = bitrate_kbps;
+    let max_backlog = MIN_SEND_QUEUE_BYTES.max(
+        (u64::from(bitrate_kbps) * 1000 / 8 * MAX_SEND_QUEUE_DELAY.as_millis() as u64 / 1000)
+            as usize,
+    );
     while !shared.stop.load(Ordering::Relaxed) {
-        let frame = match frames.recv_timeout(Duration::from_millis(100)) {
+        let mut captured = None;
+        // Con un frame retenido se reintenta enseguida.
+        let wait = if held.is_some() {
+            Duration::from_millis(3)
+        } else {
+            Duration::from_millis(100)
+        };
+        let frame = match frames.recv_timeout(wait) {
             Ok(buffer) => {
+                // Llega uno más nuevo: sustituye al retenido.
+                held = None;
                 stats.captured += 1;
+                captured = Some(buffer.captured);
                 // H.264 4:2:0 necesita dimensiones pares: con escalado
                 // fraccional la captura puede ser impar; se recorta 1 px (el
                 // stride no cambia).
@@ -226,6 +474,11 @@ fn encode_loop(
                 }
                 frame
             }
+            Err(RecvTimeoutError::Timeout) if held.is_some() => {
+                let (frame, at) = held.take().expect("comprobado");
+                captured = at;
+                frame
+            }
             Err(RecvTimeoutError::Timeout) => {
                 // Pantalla quieta: repetir el último frame si hace falta un
                 // IDR o como latido.
@@ -249,19 +502,41 @@ fn encode_loop(
                 break;
             }
         };
+        // Lo que salió por la red desde la última vez gasta saldo del cubo.
+        let wire_now = shared.wire_bytes.load(Ordering::Relaxed);
+        governor.spent(wire_now.saturating_sub(wire_seen) as usize);
+        wire_seen = wire_now;
+        if network_busy(shared, tx, max_backlog, &mut governor) {
+            if held_since.is_none() {
+                held_since = Some(Instant::now());
+                held_episodes += 1;
+            }
+            held = Some((frame, captured));
+            continue;
+        }
+        if let Some(since) = held_since.take() {
+            held_longest = held_longest.max(since.elapsed());
+        }
         let size = (frame.width, frame.height);
         if encoder.as_ref().is_none_or(|(_, s)| *s != size) {
             let config = EncoderConfig::desktop(size.0, size.1, 60, bitrate_kbps);
-            match OpenH264Encoder::from_default_path(&config) {
+            // Soltar el anterior antes de abrir otro (libera la GPU).
+            drop(encoder.take());
+            match LinuxEncoder::create(&config, choice) {
                 Ok(enc) => {
-                    tracing::info!("codificador OpenH264 creado: {}x{}", size.0, size.1);
+                    tracing::info!(
+                        "codificador H.264 creado: {}x{} ({})",
+                        size.0,
+                        size.1,
+                        enc.describe()
+                    );
                     encoder = Some((enc, size));
                     stats.encoders_created += 1;
                     shared.force_idr.store(true, Ordering::Relaxed);
                 }
                 Err(error) => {
-                    tracing::error!("no se pudo crear el codificador OpenH264: {error}");
-                    stats.fatal = Some(error.to_string());
+                    tracing::error!("no se pudo crear el codificador H.264: {error:#}");
+                    stats.fatal = Some(format!("{error:#}"));
                     break;
                 }
             }
@@ -269,6 +544,16 @@ fn encode_loop(
         let Some((enc, _)) = encoder.as_mut() else {
             continue;
         };
+        // Tasa del regulador → codificador (si cambió de forma apreciable).
+        let target = governor.rate_kbps();
+        if target.abs_diff(applied_kbps) * 20 > applied_kbps {
+            tracing::debug!(
+                "tasa de vídeo {applied_kbps} → {target} kbps (cola de red {} ms)",
+                governor.queue_delay().as_millis()
+            );
+            enc.set_bitrate_kbps(target);
+            applied_kbps = target;
+        }
         let force_idr = shared.force_idr.swap(false, Ordering::Relaxed);
         stats.forced_idr += u64::from(force_idr);
         let units = match enc.encode(
@@ -278,11 +563,24 @@ fn encode_loop(
                 ..Default::default()
             },
         ) {
-            Ok(units) => units,
+            Ok(units) => {
+                hw_failures = 0;
+                units
+            }
             Err(error) => {
                 stats.encoder_errors += 1;
-                tracing::warn!("fallo codificando OpenH264: {error}");
+                tracing::warn!("fallo codificando ({}): {error}", enc.describe());
                 shared.force_idr.store(true, Ordering::Relaxed);
+                if enc.is_hardware() {
+                    hw_failures += 1;
+                    if hw_failures >= MAX_HW_FAILURES && choice != EncoderChoice::Vaapi {
+                        tracing::warn!(
+                            "la GPU falló {hw_failures} veces seguidas: se sigue con OpenH264 (CPU)"
+                        );
+                        choice = EncoderChoice::OpenH264;
+                        encoder = None;
+                    }
+                }
                 continue;
             }
         };
@@ -303,6 +601,7 @@ fn encode_loop(
                 data: unit.data,
                 keyframe: unit.keyframe,
                 pts_us,
+                captured,
             };
             match tx.try_send(item) {
                 Ok(()) => {}
@@ -315,6 +614,20 @@ fn encode_loop(
                 Err(tokio_mpsc::error::TrySendError::Closed(_)) => return stats,
             }
         }
+    }
+    let (decreases, lowest) = governor.summary();
+    if decreases > 0 {
+        tracing::info!(
+            "la red se atascó: la tasa de vídeo bajó {decreases} veces (mínimo {lowest} kbps \
+             de {bitrate_kbps}) para no acumular retraso"
+        );
+    }
+    if held_episodes > 0 {
+        tracing::info!(
+            "red atascada {held_episodes} veces: se esperó a que se vaciara la cola antes de \
+             codificar (máx. {:.0} ms) en lugar de acumular retraso",
+            held_longest.as_secs_f64() * 1000.0
+        );
     }
     stats
 }
@@ -557,10 +870,12 @@ async fn start_capture(source: FrameSource, cfg: &SenderConfig) -> Result<Captur
 /// Paso 1 (antes de conectar con el receptor): comprueba el codificador y,
 /// para duplicar, pide la pantalla al usuario y arranca la captura.
 pub(crate) async fn prepare(cfg: &SenderConfig) -> Result<Prepared> {
-    // OpenH264 primero: si falta, no tiene sentido seguir.
-    OpenH264Encoder::from_default_path(&EncoderConfig::desktop(640, 480, 60, 1000)).map_err(
-        |e| anyhow!("{e} (con el .deb el script está en /usr/lib/CrossScreen/fetch-openh264.sh)"),
-    )?;
+    // Codificador primero (GPU u OpenH264): si no hay ninguno, no tiene
+    // sentido seguir.
+    let encoder = tokio::task::spawn_blocking(check_encoder)
+        .await
+        .map_err(|e| anyhow!("comprobando el codificador: {e}"))??;
+    tracing::info!("codificador disponible: {encoder}");
 
     if let Some((node, fd)) = test_source()? {
         let capture = start_capture(
@@ -860,8 +1175,10 @@ async fn session(
         Duration::from_micros(16_667),
         Default::default(),
         stop_rx,
+        Arc::clone(&capture.worker.shared.wire_bytes),
     ));
     let worker = &capture.worker;
+    worker.shared.set_link(Some(conn.clone()));
     worker.shared.force_idr.store(true, Ordering::Relaxed);
     worker.shared.streaming.store(true, Ordering::Relaxed);
     tracing::info!("transmisión iniciada ({stream_mode:?}): {width}x{height}");
@@ -1049,6 +1366,7 @@ async fn session(
             reconn.grace.as_secs_f64()
         );
         worker.shared.streaming.store(false, Ordering::Relaxed);
+        worker.shared.set_link(None);
         // El audio iba por la conexión caída: el receptor lo pedirá de nuevo.
         if let Some(a) = audio.take() {
             cs.audio_frames_sent += a.sent();
@@ -1078,6 +1396,7 @@ async fn session(
                 files = crate::files::start(&conn, cfg, &mut ctl).await;
                 peer_gone = false;
                 while recovered_rx.try_recv().is_ok() {}
+                worker.shared.set_link(Some(conn.clone()));
                 worker.shared.force_idr.store(true, Ordering::Relaxed);
                 worker.shared.streaming.store(true, Ordering::Relaxed);
                 let (tx, rx) = watch::channel(false);
@@ -1089,6 +1408,7 @@ async fn session(
                     Duration::from_micros(16_667),
                     sstats,
                     rx,
+                    Arc::clone(&worker.shared.wire_bytes),
                 ));
                 cs.reconnections += 1;
                 tracing::info!(
@@ -1163,6 +1483,7 @@ async fn expect_started(ctl: &mut FramedStream) -> Result<()> {
 /// Envía las unidades codificadas por datagramas hasta que se pida parar o
 /// se cierre la conexión. Devuelve la cola de vídeo para reutilizarla tras
 /// una reconexión.
+#[allow(clippy::too_many_arguments)]
 async fn send_video(
     conn: Connection,
     mut rx: tokio_mpsc::Receiver<LinuxUnit>,
@@ -1170,6 +1491,7 @@ async fn send_video(
     interval: Duration,
     mut stats: crate::stats::SendStats,
     mut stop: watch::Receiver<bool>,
+    wire_bytes: Arc<std::sync::atomic::AtomicU64>,
 ) -> (crate::stats::SendStats, tokio_mpsc::Receiver<LinuxUnit>) {
     let Some(max_datagram) = conn.max_datagram_size() else {
         tracing::error!("la conexión no admite datagramas: no se puede enviar vídeo");
@@ -1217,6 +1539,11 @@ async fn send_video(
             }
         };
         let sizes = datagrams.iter().map(Vec::len).collect::<Vec<_>>();
+        // Cabeceras QUIC + UDP + IP por datagrama, aproximadas.
+        const PER_DATAGRAM_OVERHEAD: usize = 60;
+        let wire: usize = sizes.iter().map(|n| n + PER_DATAGRAM_OVERHEAD).sum();
+        wire_bytes.fetch_add(wire as u64, Ordering::Relaxed);
+        stats.wire_bytes += wire as u64;
         let schedule = pacer.schedule(&sizes, interval, Instant::now());
         let connection = conn.clone();
         let result = pacer::send_paced(
@@ -1232,6 +1559,11 @@ async fn send_video(
         stats.datagrams_sent += result.sent as u64;
         stats.datagrams_failed += result.failed as u64;
         stats.max_pacing_late = stats.max_pacing_late.max(result.max_late);
+        if let Some(captured) = unit.captured {
+            stats
+                .capture_to_sent_us
+                .push(captured.elapsed().as_micros() as f64);
+        }
     }
     (stats, rx)
 }
