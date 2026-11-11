@@ -15,6 +15,7 @@
 pub mod annexb;
 pub mod bitstream;
 pub mod h264;
+pub mod h264_writer;
 
 pub use bitstream::VideoCodec;
 
@@ -24,6 +25,8 @@ pub mod mf;
 pub mod openh264_backend;
 #[cfg(not(windows))]
 pub mod openh264_install;
+#[cfg(not(windows))]
+pub mod vaapi;
 
 use std::time::Duration;
 
